@@ -117,9 +117,17 @@ def na1d_av(attn, value, kernel_size, dilation=1):
         raise ValueError("na1d_av expects attn with shape [B, L, H, K].")
     if value.ndim != 4:
         raise ValueError("na1d_av expects value with shape [B, L, H, D].")
+    if attn.shape[0] != value.shape[0] or attn.shape[2] != value.shape[2]:
+        raise ValueError("na1d_av requires attn/value to match on batch and heads dimensions.")
+    if attn.shape[1] > value.shape[1]:
+        raise ValueError("na1d_av attn sequence length cannot exceed value sequence length.")
 
     ks = normalize_kernel_size(kernel_size, 1)
     dil = normalize_tuple_param(dilation, 1, "dilation")
+    if attn.shape[-1] != ks[0]:
+        raise ValueError(
+            f"na1d_av attn last dim ({attn.shape[-1]}) must match kernel_size ({ks[0]})."
+        )
     check_kernel_size_vs_input(ks, (value.shape[1],))
     check_dilation_kernel_vs_input(dil, ks, (value.shape[1],))
 
@@ -150,9 +158,18 @@ def na2d_av(attn, value, kernel_size, dilation=1):
         raise ValueError("na2d_av expects attn with shape [B, H, W, heads, K].")
     if value.ndim != 5:
         raise ValueError("na2d_av expects value with shape [B, H, W, heads, D].")
+    if attn.shape[0] != value.shape[0] or attn.shape[3] != value.shape[3]:
+        raise ValueError("na2d_av requires attn/value to match on batch and heads dimensions.")
+    if attn.shape[1] > value.shape[1] or attn.shape[2] > value.shape[2]:
+        raise ValueError("na2d_av attn spatial size cannot exceed value spatial size.")
 
     ks = normalize_kernel_size(kernel_size, 2)
     dil = normalize_tuple_param(dilation, 2, "dilation")
+    kernel_area = ks[0] * ks[1]
+    if attn.shape[-1] != kernel_area:
+        raise ValueError(
+            f"na2d_av attn last dim ({attn.shape[-1]}) must match kernel area ({kernel_area})."
+        )
     spatial_shape = (value.shape[1], value.shape[2])
     check_kernel_size_vs_input(ks, spatial_shape)
     check_dilation_kernel_vs_input(dil, ks, spatial_shape)

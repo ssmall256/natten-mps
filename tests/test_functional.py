@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from natten_mps.functional import na1d, na1d_qk, na2d, na2d_qk
+from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk
 from natten_mps.utils.window import get_window_start_vectorized
 
 
@@ -278,3 +278,27 @@ def test_invalid_parameters_raise_value_error():
     v4 = torch.randn(1, 6, 5, 2, 4)
     with pytest.raises(ValueError):
         na2d(q4, k4, v4, kernel_size=(3, 3), dilation=(2, 2))
+
+
+def test_na1d_av_validates_shapes_before_backend_dispatch():
+    attn = torch.randn(1, 6, 2, 3)
+    value = torch.randn(1, 6, 3, 4)
+    with pytest.raises(ValueError):
+        na1d_av(attn, value, kernel_size=3)
+
+    attn_bad_kernel = torch.randn(1, 6, 2, 5)
+    value_ok = torch.randn(1, 6, 2, 4)
+    with pytest.raises(ValueError):
+        na1d_av(attn_bad_kernel, value_ok, kernel_size=3)
+
+
+def test_na2d_av_validates_shapes_before_backend_dispatch():
+    attn = torch.randn(1, 4, 5, 2, 9)
+    value = torch.randn(1, 4, 5, 3, 4)
+    with pytest.raises(ValueError):
+        na2d_av(attn, value, kernel_size=(3, 3))
+
+    attn_bad_kernel = torch.randn(1, 4, 5, 2, 8)
+    value_ok = torch.randn(1, 4, 5, 2, 4)
+    with pytest.raises(ValueError):
+        na2d_av(attn_bad_kernel, value_ok, kernel_size=(3, 3))
