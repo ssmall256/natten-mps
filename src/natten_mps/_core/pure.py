@@ -235,8 +235,7 @@ def na1d_qk_forward(
     query_positions = torch.arange(length, device=q.device, dtype=torch.long)
     key_idx = _noncausal_1d_indices(query_positions, length, kernel_size[0], dilation[0], q.device)
     k_neighborhood = k[:, key_idx]
-    scale_value = _default_scale(q)
-    return torch.einsum("blhd,blkhd->blhk", q, k_neighborhood) * scale_value
+    return torch.einsum("blhd,blkhd->blhk", q, k_neighborhood)
 
 
 def na1d_av_forward(
@@ -295,8 +294,7 @@ def na2d_qk_forward(
 
     k_flat = k.reshape(k.shape[0], height * width, k.shape[3], k.shape[4])
     k_neighborhood = k_flat[:, flat_idx]
-    scale_value = _default_scale(q)
-    return torch.einsum("bijhd,bijkhd->bijhk", q, k_neighborhood) * scale_value
+    return torch.einsum("bijhd,bijkhd->bijhk", q, k_neighborhood)
 
 
 def na2d_av_forward(

@@ -1,3 +1,5 @@
+import importlib
+
 import pytest
 
 from natten_mps import get_backend, set_backend
@@ -16,3 +18,14 @@ def test_set_backend_metal_raises_when_unavailable():
 def test_auto_backend_falls_back_to_pure():
     set_backend("auto")
     assert get_backend() == "pure"
+
+
+def test_env_backend_override_respected_on_ops_reload(monkeypatch):
+    import natten_mps._core.ops as ops
+
+    monkeypatch.setenv("NATTEN_BACKEND", "pure")
+    ops = importlib.reload(ops)
+    assert ops.get_backend() == "pure"
+
+    monkeypatch.delenv("NATTEN_BACKEND", raising=False)
+    importlib.reload(ops)

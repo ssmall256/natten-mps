@@ -80,7 +80,6 @@ def natten1dqkrpb(query, key, rpb, kernel_size, dilation):
     k_hl = key.permute(0, 2, 1, 3)
 
     logits = _na1d_qk(q_hl, k_hl, kernel_size=kernel_size, dilation=dilation).permute(0, 2, 1, 3)
-    logits = logits / (query.shape[-1] ** -0.5)
 
     ksize = kernel_size if isinstance(kernel_size, int) else kernel_size[0]
     dil = dilation if isinstance(dilation, int) else dilation[0]
@@ -132,7 +131,6 @@ def natten2dqkrpb(query, key, rpb, kernel_size, dilation):
     k_hl = key.permute(0, 2, 3, 1, 4)
 
     logits = _na2d_qk(q_hl, k_hl, kernel_size=kernel_size, dilation=dilation).permute(0, 3, 1, 2, 4)
-    logits = logits / (query.shape[-1] ** -0.5)
 
     if isinstance(kernel_size, int):
         kh = kw = kernel_size

@@ -12,6 +12,8 @@ Each backend module must provide these functions:
 
 from __future__ import annotations
 
+import os
+
 from . import metal, nanobind, pure
 
 _REQUIRED_BACKEND_FUNCTIONS = (
@@ -23,7 +25,7 @@ _REQUIRED_BACKEND_FUNCTIONS = (
     "na2d_av_forward",
 )
 
-_ACTIVE_BACKEND = "auto"
+_ACTIVE_BACKEND = os.environ.get("NATTEN_BACKEND", "auto")
 _BACKEND_REGISTRY = {}
 
 
@@ -106,4 +108,6 @@ def na2d_av_forward(attn, v, kernel_size, dilation):
 register_backend("pure", pure)
 register_backend("metal", metal)
 register_backend("nanobind", nanobind)
-set_backend("auto")
+
+if _ACTIVE_BACKEND not in {"auto", *list(_BACKEND_REGISTRY.keys())}:
+    _ACTIVE_BACKEND = "auto"

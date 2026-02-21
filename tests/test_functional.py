@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from natten_mps.functional import na1d, na2d
+from natten_mps.functional import na1d, na1d_qk, na2d, na2d_qk
 from natten_mps.utils.window import get_window_start_vectorized
 
 
@@ -85,6 +85,24 @@ def _na2d_reference_shifted(q, k, v, kernel_size, dilation):
     return out
 
 
+def _na1d_qk_reference_unscaled(q, k, kernel_size, dilation):
+    bsz, length, heads, _ = q.shape
+    starts = get_window_start_vectorized(
+        torch.arange(length, device=q.device, dtype=torch.long),
+        length=length,
+        kernel_size=kernel_size,
+        dilation=dilation,
+    )
+    offsets = torch.arange(kernel_size, device=q.device, dtype=torch.long) * dilation
+    key_idx = starts.unsqueeze(1) + offsets.unsqueeze(0)
+
+    out = torch.empty((bsz, length, heads, kernel_size), device=q.device, dtype=q.dtype)
+    for i in range(length):
+        k_neighborhood = k[:, key_idx[i]]
+        out[:, i] = torch.einsum("bhd,bkhd->bhk", q[:, i], k_neighborhood)
+    return out
+
+
 def test_na1d_basic_shape():
     q = torch.randn(2, 16, 4, 8)
     k = torch.randn(2, 16, 4, 8)
@@ -161,6 +179,52 @@ def test_na2d_matches_shifted_boundary_reference_with_dilation():
     out = na2d(q, k, v, kernel_size=(3, 3), dilation=(2, 2))
     ref = _na2d_reference_shifted(q, k, v, kernel_size=(3, 3), dilation=(2, 2))
     assert torch.allclose(out, ref, atol=1e-5, rtol=1e-5)
+
+
+def test_na1d_qk_returns_unscaled_logits():
+    q = torch.randn(1, 7, 2, 3)
+    k = torch.randn(1, 7, 2, 3)
+
+    logits = na1d_qk(q, k, kernel_size=3, dilation=2)
+    ref = _na1d_qk_reference_unscaled(q, k, kernel_size=3, dilation=2)
+    assert torch.allclose(logits, ref, atol=1e-5, rtol=1e-5)
+
+
+def test_na2d_qk_returns_unscaled_logits():
+    q = torch.randn(1, 7, 8, 2, 3)
+    k = torch.randn(1, 7, 8, 2, 3)
+
+    logits = na2d_qk(q, k, kernel_size=(3, 3), dilation=(2, 2))
+
+    bsz, height, width, heads, _ = q.shape
+    ref = torch.empty((bsz, height, width, heads, 9), dtype=q.dtype, device=q.device)
+
+    starts_h = get_window_start_vectorized(
+        torch.arange(height, device=q.device, dtype=torch.long),
+        length=height,
+        kernel_size=3,
+        dilation=2,
+    )
+    starts_w = get_window_start_vectorized(
+        torch.arange(width, device=q.device, dtype=torch.long),
+        length=width,
+        kernel_size=3,
+        dilation=2,
+    )
+    offs = torch.arange(3, device=q.device, dtype=torch.long) * 2
+
+    for i in range(height):
+        h_idx = starts_h[i] + offs
+        for j in range(width):
+            w_idx = starts_w[j] + offs
+            k_neighborhood = []
+            for hh in h_idx:
+                for ww in w_idx:
+                    k_neighborhood.append(k[:, hh, ww])
+            k_neighborhood = torch.stack(k_neighborhood, dim=1)
+            ref[:, i, j] = torch.einsum("bhd,bkhd->bhk", q[:, i, j], k_neighborhood)
+
+    assert torch.allclose(logits, ref, atol=1e-5, rtol=1e-5)
 
 
 def test_na1d_causal_first_position_attends_only_to_itself():

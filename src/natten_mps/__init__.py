@@ -29,10 +29,6 @@ def get_backend() -> str:
 def set_backend(name: str) -> None:
     ops.set_backend(name)
 
-
-set_backend("auto")
-
-
 __all__ = [
     "na1d",
     "na2d",
