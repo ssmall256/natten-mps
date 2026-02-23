@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk
-from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D
+from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk
+from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D, NeighborhoodAttention3D
 
 
 def has_cuda():
@@ -21,12 +21,16 @@ def has_fna():
 __all__ = [
     "na1d",
     "na2d",
+    "na3d",
     "na1d_qk",
     "na1d_av",
     "na2d_qk",
     "na2d_av",
+    "na3d_qk",
+    "na3d_av",
     "NeighborhoodAttention1D",
     "NeighborhoodAttention2D",
+    "NeighborhoodAttention3D",
     "has_cuda",
     "has_mps",
     "has_fna",

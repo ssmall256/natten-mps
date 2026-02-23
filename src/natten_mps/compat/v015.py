@@ -3,8 +3,9 @@ from __future__ import annotations
 import torch
 
 from natten_mps.functional import na1d as _na1d
-from natten_mps.functional import na1d_av, na1d_qk, na2d as _na2d
-from natten_mps.functional import na2d_av, na2d_qk
+from natten_mps.functional import na1d_av, na1d_qk, na2d as _na2d, na3d as _na3d
+from natten_mps.functional import na2d_av, na2d_qk, na3d_av, na3d_qk
+from natten_mps.nn import NeighborhoodAttention3D
 
 from .v014 import (
     NeighborhoodAttention1D,
@@ -16,13 +17,6 @@ from .v014 import (
     natten2dav,
     natten2dqkrpb,
 )
-
-
-class NeighborhoodAttention3D(torch.nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        raise NotImplementedError("3D neighborhood attention is not supported in natten-mps")
-
 
 
 def na1d(query, key, value, kernel_size, dilation=1, is_causal=False):
@@ -39,6 +33,18 @@ def na1d(query, key, value, kernel_size, dilation=1, is_causal=False):
 
 def na2d(query, key, value, kernel_size, dilation=1, is_causal=False):
     return _na2d(
+        query,
+        key,
+        value,
+        kernel_size=kernel_size,
+        stride=1,
+        dilation=dilation,
+        is_causal=is_causal,
+    )
+
+
+def na3d(query, key, value, kernel_size, dilation=1, is_causal=False):
+    return _na3d(
         query,
         key,
         value,
@@ -75,10 +81,13 @@ __all__ = [
     "natten2dav",
     "na1d",
     "na2d",
+    "na3d",
     "na1d_qk",
     "na1d_av",
     "na2d_qk",
     "na2d_av",
+    "na3d_qk",
+    "na3d_av",
     "has_cuda",
     "has_mps",
     "has_gemm",
