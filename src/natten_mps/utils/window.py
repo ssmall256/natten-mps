@@ -81,3 +81,55 @@ def get_pb_start_vectorized(
     right_only = (~left_boundary) & right_boundary
     result = torch.where(right_only, right_result, result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Scalar helpers (int-in, int-out)
+# ---------------------------------------------------------------------------
+
+
+def get_window_start(index: int, length: int, kernel_size: int, dilation: int) -> int:
+    """Scalar version of :func:`get_window_start_vectorized`."""
+    neighborhood_size = kernel_size // 2
+
+    if dilation <= 1:
+        start = max(index - neighborhood_size, 0)
+        if index + neighborhood_size >= length:
+            start += length - index - neighborhood_size - 1
+        return start
+
+    start = index - neighborhood_size * dilation
+    if start < 0:
+        return index % dilation
+    if index + neighborhood_size * dilation >= length:
+        imodd = index % dilation
+        a = (length // dilation) * dilation
+        b = length - a
+        if imodd < b:
+            return length - b + imodd - 2 * neighborhood_size * dilation
+        return a + imodd - kernel_size * dilation
+    return start
+
+
+def get_window_end(index: int, length: int, kernel_size: int, dilation: int) -> int:
+    """Return the inclusive end position of the neighborhood window."""
+    return get_window_start(index, length, kernel_size, dilation) + (kernel_size - 1) * dilation
+
+
+def get_pb_start(index: int, length: int, kernel_size: int, dilation: int) -> int:
+    """Scalar version of :func:`get_pb_start_vectorized`."""
+    neighborhood_size = kernel_size // 2
+
+    if dilation <= 1:
+        pb = neighborhood_size
+        if index < neighborhood_size:
+            pb += neighborhood_size - index
+        elif index + neighborhood_size >= length:
+            pb += length - index - 1 - neighborhood_size
+        return pb
+
+    if index - neighborhood_size * dilation < 0:
+        return kernel_size - 1 - index // dilation
+    if index + neighborhood_size * dilation >= length:
+        return (length - index - 1) // dilation
+    return neighborhood_size

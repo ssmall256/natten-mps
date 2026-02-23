@@ -5,7 +5,13 @@ from .params import (
     normalize_kernel_size,
     normalize_tuple_param,
 )
-from .window import get_pb_start_vectorized, get_window_start_vectorized
+from .window import (
+    get_pb_start,
+    get_pb_start_vectorized,
+    get_window_end,
+    get_window_start,
+    get_window_start_vectorized,
+)
 
 __all__ = [
     "normalize_tuple_param",
@@ -15,4 +21,7 @@ __all__ = [
     "check_dilation_kernel_vs_input",
     "get_window_start_vectorized",
     "get_pb_start_vectorized",
+    "get_window_start",
+    "get_window_end",
+    "get_pb_start",
 ]
