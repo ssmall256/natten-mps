@@ -10,14 +10,14 @@ def test_set_and_get_backend_pure():
     assert get_backend() == "pure"
 
 
-def test_set_backend_metal_raises_when_unavailable():
-    with pytest.raises(NotImplementedError):
-        set_backend("metal")
+def test_set_backend_metal():
+    set_backend("metal")
+    assert get_backend() == "metal"
 
 
-def test_auto_backend_falls_back_to_pure():
+def test_auto_backend_selects_metal():
     set_backend("auto")
-    assert get_backend() == "pure"
+    assert get_backend() == "metal"
 
 
 def test_env_backend_override_respected_on_ops_reload(monkeypatch):

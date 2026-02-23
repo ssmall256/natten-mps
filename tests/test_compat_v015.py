@@ -13,9 +13,11 @@ def test_v015_fused_apis_work():
     assert out.shape == (2, 12, 4, 8)
 
 
-def test_v015_neighborhood_attention3d_not_supported():
-    with pytest.raises(NotImplementedError):
-        natten.NeighborhoodAttention3D(dim=64, kernel_size=3, num_heads=4)
+def test_v015_neighborhood_attention3d_supported():
+    mod = natten.NeighborhoodAttention3D(embed_dim=64, kernel_size=3, num_heads=4)
+    x = torch.randn(1, 5, 5, 5, 64)
+    out = mod(x)
+    assert out.shape == (1, 5, 5, 5, 64)
 
 
 def test_v015_feature_detection_functions_return_bool():
