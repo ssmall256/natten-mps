@@ -5,8 +5,9 @@ import torch
 from natten_mps._core import ops
 from natten_mps._core import metal as _metal
 from natten_mps._core import nanobind as _nanobind
-from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk
-from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D
+from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk
+from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D, NeighborhoodAttention3D
+from natten_mps.support_matrix import get_support_matrix
 from natten_mps.version import __version__
 
 
@@ -32,16 +33,21 @@ def set_backend(name: str) -> None:
 __all__ = [
     "na1d",
     "na2d",
+    "na3d",
     "na1d_qk",
     "na1d_av",
     "na2d_qk",
     "na2d_av",
+    "na3d_qk",
+    "na3d_av",
     "NeighborhoodAttention1D",
     "NeighborhoodAttention2D",
+    "NeighborhoodAttention3D",
     "has_mps",
     "has_metal",
     "has_nanobind",
     "get_backend",
     "set_backend",
+    "get_support_matrix",
     "__version__",
 ]

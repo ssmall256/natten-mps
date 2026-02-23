@@ -4,10 +4,13 @@ Backend dispatch for natten-mps.
 Each backend module must provide these functions:
   - na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale) -> output
   - na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale) -> output
-  - na1d_qk_forward(q, k, kernel_size, dilation) -> attn_weights
-  - na1d_av_forward(attn, v, kernel_size, dilation) -> output
-  - na2d_qk_forward(q, k, kernel_size, dilation) -> attn_weights
-  - na2d_av_forward(attn, v, kernel_size, dilation) -> output
+  - na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale) -> output
+  - na1d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale) -> attn_weights
+  - na1d_av_forward(attn, v, kernel_size, dilation, stride, is_causal) -> output
+  - na2d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale) -> attn_weights
+  - na2d_av_forward(attn, v, kernel_size, dilation, stride, is_causal) -> output
+  - na3d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale) -> attn_weights
+  - na3d_av_forward(attn, v, kernel_size, dilation, stride, is_causal) -> output
 """
 
 from __future__ import annotations
@@ -19,10 +22,13 @@ from . import metal, nanobind, pure
 _REQUIRED_BACKEND_FUNCTIONS = (
     "na1d_forward",
     "na2d_forward",
+    "na3d_forward",
     "na1d_qk_forward",
     "na1d_av_forward",
     "na2d_qk_forward",
     "na2d_av_forward",
+    "na3d_qk_forward",
+    "na3d_av_forward",
 )
 
 _ACTIVE_BACKEND = os.environ.get("NATTEN_BACKEND", "auto")
@@ -89,20 +95,61 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     return _active_module().na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
 
-def na1d_qk_forward(q, k, kernel_size, dilation):
-    return _active_module().na1d_qk_forward(q, k, kernel_size, dilation)
+def na1d_qk_forward(q, k, kernel_size, dilation, stride=(1,), is_causal=(False,), scale=None):
+    return _active_module().na1d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
 
 
-def na1d_av_forward(attn, v, kernel_size, dilation):
-    return _active_module().na1d_av_forward(attn, v, kernel_size, dilation)
+def na1d_av_forward(attn, v, kernel_size, dilation, stride=(1,), is_causal=(False,)):
+    return _active_module().na1d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
 
 
-def na2d_qk_forward(q, k, kernel_size, dilation):
-    return _active_module().na2d_qk_forward(q, k, kernel_size, dilation)
+def na2d_qk_forward(q, k, kernel_size, dilation, stride=(1, 1), is_causal=(False, False), scale=None):
+    return _active_module().na2d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
 
 
-def na2d_av_forward(attn, v, kernel_size, dilation):
-    return _active_module().na2d_av_forward(attn, v, kernel_size, dilation)
+def na2d_av_forward(attn, v, kernel_size, dilation, stride=(1, 1), is_causal=(False, False)):
+    return _active_module().na2d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
+
+
+def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    return _active_module().na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na3d_qk_forward(q, k, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False), scale=None):
+    return _active_module().na3d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
+
+
+def na3d_av_forward(attn, v, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False)):
+    return _active_module().na3d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
+
+
+# ---------------------------------------------------------------------------
+# Backward dispatch — returns None if Metal backward unavailable
+# ---------------------------------------------------------------------------
+
+
+def na1d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1,), is_causal=(False,)):
+    return _active_module().na1d_qk_backward(d_attn, q, k, kernel_size, dilation, stride, is_causal)
+
+
+def na1d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1,), is_causal=(False,)):
+    return _active_module().na1d_av_backward(d_out, attn, v, kernel_size, dilation, stride, is_causal)
+
+
+def na2d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1), is_causal=(False, False)):
+    return _active_module().na2d_qk_backward(d_attn, q, k, kernel_size, dilation, stride, is_causal)
+
+
+def na2d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1), is_causal=(False, False)):
+    return _active_module().na2d_av_backward(d_out, attn, v, kernel_size, dilation, stride, is_causal)
+
+
+def na3d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False)):
+    return _active_module().na3d_qk_backward(d_attn, q, k, kernel_size, dilation, stride, is_causal)
+
+
+def na3d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False)):
+    return _active_module().na3d_av_backward(d_out, attn, v, kernel_size, dilation, stride, is_causal)
 
 
 register_backend("pure", pure)
