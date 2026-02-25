@@ -62,6 +62,34 @@ Metal kernels vs pure-PyTorch backend on Apple Silicon (M-series), forward pass:
 
 Run the full suite: `python benchmarks/bench.py` (add `--backward` for backward pass timing).
 
+### Cross-framework: natten-mps vs natten-mlx
+
+Apple Silicon (M-series), fp32, B=1 H=4 D=32:
+
+| Config | natten-mps (MPS) | natten-mlx (MLX) |
+|---|---|---|
+| 1D L=256 K=7 fwd | 0.42 ms | 0.24 ms |
+| 1D L=1024 K=7 fwd | 1.12 ms | 0.45 ms |
+| 2D 32×32 K=7 fwd | 0.96 ms | 0.42 ms |
+| 2D 64×64 K=7 fwd | 3.23 ms | 1.52 ms |
+| 3D 16³ K=3 fwd | 0.56 ms | 0.22 ms |
+| 1D L=256 K=7 bwd | 0.56 ms | 0.19 ms |
+| 2D 32×32 K=7 bwd | 1.73 ms | 0.48 ms |
+
+MLX's compiled Metal primitives are generally 2–3× faster than PyTorch MPS dispatch. Both are orders of magnitude faster than pure-framework baselines.
+
+### Apple Silicon vs CUDA GPUs — backward pass
+
+NATTEN's CUDA backward pass has known performance issues for 3D and large 2D workloads. Apple Silicon backward passes are competitive with — and sometimes faster than — datacenter GPUs:
+
+| Config | natten-mps bwd | natten-mlx bwd | A100 CUDA bwd | A40 CUDA bwd |
+|---|---|---|---|---|
+| 3D 32³ K=3 | 12.4 ms | 5.7 ms | 458 ms (default) / 11.8 ms (KV-parallel) | — |
+| 2D 1024² K=9 | — | — | — | 800–1041 ms |
+| 3D 16³ K=3 | — | — | — | 3856 ms |
+
+CUDA numbers sourced from NATTEN GitHub issues: [#157](https://github.com/SHI-Labs/NATTEN/issues/157) (A100/H100 3D backward) and [#161](https://github.com/SHI-Labs/NATTEN/issues/161) (A40 2D/3D backward). Our CSR inverse-map backward design avoids the scaling problems that affect NATTEN's default CUDA backward kernels.
+
 ## Backend tiers
 
 | Backend | Status | Description |

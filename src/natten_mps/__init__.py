@@ -6,6 +6,7 @@ from natten_mps._core import ops
 from natten_mps._core import metal as _metal
 from natten_mps._core import nanobind as _nanobind
 from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk
+from natten_mps.merge import merge_attentions
 from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D, NeighborhoodAttention3D
 from natten_mps.support_matrix import get_support_matrix
 from natten_mps.version import __version__
@@ -40,6 +41,7 @@ __all__ = [
     "na2d_av",
     "na3d_qk",
     "na3d_av",
+    "merge_attentions",
     "NeighborhoodAttention1D",
     "NeighborhoodAttention2D",
     "NeighborhoodAttention3D",

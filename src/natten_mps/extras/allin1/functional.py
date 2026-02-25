@@ -13,6 +13,18 @@ import torch
 
 from .reference_impl import get_pb_start, get_window_end, get_window_start
 
+# Metal dispatch (optional — falls back to pure PyTorch)
+try:
+    from natten_mps.extras.allin1.metal import (
+        metal_1d_qkrpb,
+        metal_1d_av,
+        metal_2d_qkrpb,
+        metal_2d_av,
+    )
+    _HAS_METAL = True
+except Exception:
+    _HAS_METAL = False
+
 
 def _check_args_against_dim(length: int, kernel_size: int, dilation: int, axis_name: str) -> None:
     if kernel_size * dilation > length:
@@ -302,8 +314,14 @@ def natten1dqkrpb(query, key, rpb, kernel_size, dilation):
     """
     _check_args_against_dim(int(query.shape[1]), int(kernel_size), int(dilation), "length")
 
-    q_hf = query.permute(0, 2, 1, 3)
-    k_hf = key.permute(0, 2, 1, 3)
+    q_hf = query.permute(0, 2, 1, 3).contiguous()
+    k_hf = key.permute(0, 2, 1, 3).contiguous()
+
+    if _HAS_METAL and rpb is not None:
+        result = metal_1d_qkrpb(q_hf, k_hf, rpb, int(kernel_size), int(dilation))
+        if result is not None:
+            return result.permute(0, 2, 1, 3)
+
     out_hf = _natten1dqkrpb_torch(q_hf, k_hf, rpb, kernel_size, dilation)
     return out_hf.permute(0, 2, 1, 3)
 
@@ -316,8 +334,14 @@ def natten1dav(attention_probs, value, kernel_size, dilation):
     """
     _check_args_against_dim(int(value.shape[1]), int(kernel_size), int(dilation), "length")
 
-    attn_hf = attention_probs.permute(0, 2, 1, 3)
-    v_hf = value.permute(0, 2, 1, 3)
+    attn_hf = attention_probs.permute(0, 2, 1, 3).contiguous()
+    v_hf = value.permute(0, 2, 1, 3).contiguous()
+
+    if _HAS_METAL:
+        result = metal_1d_av(attn_hf, v_hf, int(kernel_size), int(dilation))
+        if result is not None:
+            return result.permute(0, 2, 1, 3)
+
     out_hf = _natten1dav_torch(attn_hf, v_hf, kernel_size, dilation)
     return out_hf.permute(0, 2, 1, 3)
 
@@ -334,8 +358,19 @@ def natten2dqkrpb(query, key, rpb, kernel_size, dilation):
     _check_args_against_dim(int(query.shape[1]), k, d, "height")
     _check_args_against_dim(int(query.shape[2]), k, d, "width")
 
-    q_hf = query.permute(0, 3, 1, 2, 4)
-    k_hf = key.permute(0, 3, 1, 2, 4)
+    q_hf = query.permute(0, 3, 1, 2, 4).contiguous()
+    k_hf = key.permute(0, 3, 1, 2, 4).contiguous()
+
+    # Metal only for square kernels with uniform dilation
+    ks_h = k
+    ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else k
+    dil_h = d
+    dil_w = int(dilation[1]) if isinstance(dilation, tuple) else d
+    if _HAS_METAL and rpb is not None and ks_h == ks_w and dil_h == dil_w:
+        result = metal_2d_qkrpb(q_hf, k_hf, rpb, ks_h, dil_h)
+        if result is not None:
+            return result.permute(0, 2, 3, 1, 4)
+
     out_hf = _natten2dqkrpb_torch(q_hf, k_hf, rpb, kernel_size, dilation)
     return out_hf.permute(0, 2, 3, 1, 4)
 
@@ -351,8 +386,18 @@ def natten2dav(attention_probs, value, kernel_size, dilation):
     _check_args_against_dim(int(value.shape[1]), k, d, "height")
     _check_args_against_dim(int(value.shape[2]), k, d, "width")
 
-    attn_hf = attention_probs.permute(0, 3, 1, 2, 4)
-    v_hf = value.permute(0, 3, 1, 2, 4)
+    attn_hf = attention_probs.permute(0, 3, 1, 2, 4).contiguous()
+    v_hf = value.permute(0, 3, 1, 2, 4).contiguous()
+
+    ks_h = k
+    ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else k
+    dil_h = d
+    dil_w = int(dilation[1]) if isinstance(dilation, tuple) else d
+    if _HAS_METAL and ks_h == ks_w and dil_h == dil_w:
+        result = metal_2d_av(attn_hf, v_hf, ks_h, dil_h)
+        if result is not None:
+            return result.permute(0, 2, 3, 1, 4)
+
     out_hf = _natten2dav_torch(attn_hf, v_hf, kernel_size, dilation)
     return out_hf.permute(0, 2, 3, 1, 4)
 

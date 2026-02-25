@@ -13,7 +13,7 @@ class TestNa1dValidation:
     def test_shape_mismatch(self):
         q = torch.randn(2, 10, 2, 4)
         k = torch.randn(2, 8, 2, 4)
-        with pytest.raises(ValueError, match="same shape"):
+        with pytest.raises(ValueError, match="Spatial dimensions must match"):
             na1d(q, k, q, kernel_size=3)
 
     def test_kernel_larger_than_input(self):
@@ -41,7 +41,7 @@ class TestNa2dValidation:
     def test_shape_mismatch(self):
         q = torch.randn(2, 5, 5, 2, 4)
         k = torch.randn(2, 5, 4, 2, 4)
-        with pytest.raises(ValueError, match="same shape"):
+        with pytest.raises(ValueError, match="Spatial dimensions must match"):
             na2d(q, k, q, kernel_size=3)
 
     def test_kernel_larger_than_input(self):
@@ -64,7 +64,7 @@ class TestNa3dValidation:
     def test_shape_mismatch(self):
         q = torch.randn(2, 5, 5, 5, 2, 4)
         k = torch.randn(2, 5, 5, 4, 2, 4)
-        with pytest.raises(ValueError, match="same shape"):
+        with pytest.raises(ValueError, match="Spatial dimensions must match"):
             na3d(q, k, q, kernel_size=3)
 
     def test_kernel_larger_than_input(self):

@@ -72,7 +72,15 @@ def _on_mps(*tensors: torch.Tensor) -> bool:
 
 
 def _supported_dtype(*tensors: torch.Tensor) -> bool:
-    return all(t.dtype in (torch.float32, torch.float16) for t in tensors)
+    return all(t.dtype in (torch.float32, torch.float16, torch.bfloat16) for t in tensors)
+
+
+def _upcast_bf16(*tensors: torch.Tensor) -> tuple[list[torch.Tensor], torch.dtype]:
+    """If any tensor is bf16, upcast all to fp32. Returns (tensors, original_dtype)."""
+    orig_dtype = tensors[0].dtype
+    if orig_dtype == torch.bfloat16:
+        return [t.float() for t in tensors], orig_dtype
+    return list(tensors), orig_dtype
 
 
 def _kernel_suffix(dtype: torch.dtype) -> str:
@@ -140,6 +148,8 @@ def na1d_qk_forward(
 
         return pure.na1d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
 
+    [q, k], orig_dtype = _upcast_bf16(q, k)
+
     lib = _get_library()
     B, L, H, D = q.shape
     K = kernel_size[0]
@@ -167,7 +177,7 @@ def na1d_qk_forward(
     result = attn_hf.permute(0, 2, 1, 3).contiguous()
     if scale is not None:
         result = result * scale
-    return result
+    return result.to(orig_dtype)
 
 
 def na1d_av_forward(
@@ -182,6 +192,8 @@ def na1d_av_forward(
         from natten_mps._core import pure
 
         return pure.na1d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
+
+    [attn, v], orig_dtype = _upcast_bf16(attn, v)
 
     lib = _get_library()
     B, L_out, H, K = attn.shape
@@ -206,7 +218,7 @@ def na1d_av_forward(
         kernel = getattr(lib, "natten1d_av_forward" + _kernel_suffix(v.dtype))
         kernel(attn_hf, v_hf, out_hf, B, H, L, D, K, dil, threads=(L_out, H, B))
 
-    return _from_heads_first_1d(out_hf)
+    return _from_heads_first_1d(out_hf).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +239,8 @@ def na2d_qk_forward(
         from natten_mps._core import pure
 
         return pure.na2d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
+
+    [q, k], orig_dtype = _upcast_bf16(q, k)
 
     lib = _get_library()
     B, Hi, Wi, H, D = q.shape
@@ -277,7 +291,7 @@ def na2d_qk_forward(
     result = attn_hf.permute(0, 2, 3, 1, 4).contiguous()
     if scale is not None:
         result = result * scale
-    return result
+    return result.to(orig_dtype)
 
 
 def na2d_av_forward(
@@ -292,6 +306,8 @@ def na2d_av_forward(
         from natten_mps._core import pure
 
         return pure.na2d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
+
+    [attn, v], orig_dtype = _upcast_bf16(attn, v)
 
     lib = _get_library()
     B, Hi_out, Wi_out, H, KK = attn.shape
@@ -338,7 +354,7 @@ def na2d_av_forward(
             threads=(Wi_out, Hi_out, B * H),
         )
 
-    return _from_heads_first_2d(out_hf)
+    return _from_heads_first_2d(out_hf).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -394,12 +410,14 @@ def na1d_forward(
 
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
+    [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
+
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
 
     logits = na1d_qk_forward(q, k, kernel_size, dilation, stride=stride, is_causal=is_causal)
     logits = logits * scale_value
     attn_weights = torch.softmax(logits, dim=-1)
-    return na1d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal)
+    return na1d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal).to(orig_dtype)
 
 
 def na2d_forward(
@@ -417,12 +435,14 @@ def na2d_forward(
 
         return pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
+    [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
+
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
 
     logits = na2d_qk_forward(q, k, kernel_size, dilation, stride=stride, is_causal=is_causal)
     logits = logits * scale_value
     attn_weights = torch.softmax(logits, dim=-1)
-    return na2d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal)
+    return na2d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +463,8 @@ def na3d_qk_forward(
         from natten_mps._core import pure
 
         return pure.na3d_qk_forward(q, k, kernel_size, dilation, stride, is_causal, scale)
+
+    [q, k], orig_dtype = _upcast_bf16(q, k)
 
     lib = _get_library()
     B, Dp, Hi, Wi, H, D = q.shape
@@ -495,7 +517,7 @@ def na3d_qk_forward(
     result = attn_hf.permute(0, 2, 3, 4, 1, 5).contiguous()
     if scale is not None:
         result = result * scale
-    return result
+    return result.to(orig_dtype)
 
 
 def na3d_av_forward(
@@ -510,6 +532,8 @@ def na3d_av_forward(
         from natten_mps._core import pure
 
         return pure.na3d_av_forward(attn, v, kernel_size, dilation, stride, is_causal)
+
+    [attn, v], orig_dtype = _upcast_bf16(attn, v)
 
     lib = _get_library()
     B, Dp_out, Hi_out, Wi_out, H, K3 = attn.shape
@@ -556,7 +580,7 @@ def na3d_av_forward(
             threads=(Wi_out, Hi_out, B * H * Dp_out),
         )
 
-    return _from_heads_first_3d(out_hf)
+    return _from_heads_first_3d(out_hf).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -579,12 +603,14 @@ def na3d_forward(
 
         return pure.na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
+    [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
+
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
 
     logits = na3d_qk_forward(q, k, kernel_size, dilation, stride=stride, is_causal=is_causal)
     logits = logits * scale_value
     attn_weights = torch.softmax(logits, dim=-1)
-    return na3d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal)
+    return na3d_av_forward(attn_weights, v, kernel_size, dilation, stride=stride, is_causal=is_causal).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +635,8 @@ def _can_use_metal_backward_3d(t, kernel_size, dilation, stride, is_causal):
 def na1d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1,), is_causal=(False,)):
     if not _can_use_metal_backward_1d(d_attn, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_attn, q, k], orig_dtype = _upcast_bf16(d_attn, q, k)
 
     lib = _get_library()
     B, L_out, H, K = d_attn.shape
@@ -638,12 +666,14 @@ def na1d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1,), is_causal
         B, H, L, D, L_out, K,
         threads=(D, L, B * H))
 
-    return _from_heads_first_1d(dq_hf), _from_heads_first_1d(dk_hf)
+    return _from_heads_first_1d(dq_hf).to(orig_dtype), _from_heads_first_1d(dk_hf).to(orig_dtype)
 
 
 def na1d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1,), is_causal=(False,)):
     if not _can_use_metal_backward_1d(d_out, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_out, attn, v], orig_dtype = _upcast_bf16(d_out, attn, v)
 
     lib = _get_library()
     B, L_out, H, D = d_out.shape
@@ -673,7 +703,7 @@ def na1d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1,), is_caus
         B, H, L, D, L_out, K,
         threads=(D, L, B * H))
 
-    return da_hf.permute(0, 2, 1, 3).contiguous(), _from_heads_first_1d(dv_hf)
+    return da_hf.permute(0, 2, 1, 3).contiguous().to(orig_dtype), _from_heads_first_1d(dv_hf).to(orig_dtype)
 
 
 # -- 2D backward --
@@ -681,6 +711,8 @@ def na1d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1,), is_caus
 def na2d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1), is_causal=(False, False)):
     if not _can_use_metal_backward_2d(d_attn, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_attn, q, k], orig_dtype = _upcast_bf16(d_attn, q, k)
 
     lib = _get_library()
     # d_attn shape: [B, Hi_out, Wi_out, H, KK]
@@ -718,12 +750,14 @@ def na2d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1), is_caus
         B, H, Hi, Wi, D, out_count, KK,
         threads=(D, HW, B * H))
 
-    return _from_heads_first_2d(dq_hf), _from_heads_first_2d(dk_hf)
+    return _from_heads_first_2d(dq_hf).to(orig_dtype), _from_heads_first_2d(dk_hf).to(orig_dtype)
 
 
 def na2d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1), is_causal=(False, False)):
     if not _can_use_metal_backward_2d(d_out, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_out, attn, v], orig_dtype = _upcast_bf16(d_out, attn, v)
 
     lib = _get_library()
     # d_out shape: [B, Hi_out, Wi_out, H, D]
@@ -761,7 +795,7 @@ def na2d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1), is_ca
         B, H, Hi, Wi, D, out_count, KK,
         threads=(D, HW, B * H))
 
-    return da_hf.permute(0, 2, 3, 1, 4).contiguous(), _from_heads_first_2d(dv_hf)
+    return da_hf.permute(0, 2, 3, 1, 4).contiguous().to(orig_dtype), _from_heads_first_2d(dv_hf).to(orig_dtype)
 
 
 # -- 3D backward --
@@ -769,6 +803,8 @@ def na2d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1), is_ca
 def na3d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False)):
     if not _can_use_metal_backward_3d(d_attn, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_attn, q, k], orig_dtype = _upcast_bf16(d_attn, q, k)
 
     lib = _get_library()
     # d_attn shape: [B, Dp_out, Hi_out, Wi_out, H, KKK]
@@ -808,12 +844,14 @@ def na3d_qk_backward(d_attn, q, k, kernel_size, dilation, stride=(1, 1, 1), is_c
         B, H, vol, D, out_count, KKK,
         threads=(D, vol, B * H))
 
-    return _from_heads_first_3d(dq_hf), _from_heads_first_3d(dk_hf)
+    return _from_heads_first_3d(dq_hf).to(orig_dtype), _from_heads_first_3d(dk_hf).to(orig_dtype)
 
 
 def na3d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1, 1), is_causal=(False, False, False)):
     if not _can_use_metal_backward_3d(d_out, kernel_size, dilation, stride, is_causal):
         return None
+
+    [d_out, attn, v], orig_dtype = _upcast_bf16(d_out, attn, v)
 
     lib = _get_library()
     # d_out shape: [B, Dp_out, Hi_out, Wi_out, H, D]
@@ -853,4 +891,4 @@ def na3d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1, 1), is
         B, H, vol, D, out_count, KKK,
         threads=(D, vol, B * H))
 
-    return da_hf.permute(0, 2, 3, 4, 1, 5).contiguous(), _from_heads_first_3d(dv_hf)
+    return da_hf.permute(0, 2, 3, 4, 1, 5).contiguous().to(orig_dtype), _from_heads_first_3d(dv_hf).to(orig_dtype)
