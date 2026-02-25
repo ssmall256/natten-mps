@@ -5,6 +5,7 @@ import torch
 from natten_mps._core import ops
 from natten_mps._core import metal as _metal
 from natten_mps._core import nanobind as _nanobind
+import natten_mps._torch_ops as _torch_ops  # noqa: F401 — register custom ops
 from natten_mps.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk
 from natten_mps.merge import merge_attentions
 from natten_mps.nn import NeighborhoodAttention1D, NeighborhoodAttention2D, NeighborhoodAttention3D
