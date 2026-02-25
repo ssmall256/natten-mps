@@ -50,27 +50,56 @@ def _merge_attentions_fn(
 
 
 class _MergeAttentionsAutogradFn(Function):
-    """Custom autograd for 2-way merge with correct backward pass."""
+    """Custom autograd for 2-way merge with analytical backward.
+
+    Forward:
+        sig = sigmoid(lse_1 - lse_0)          (unsqueezed to [..., 1] for output)
+        output = (1 - sig) * out_0 + sig * out_1
+        lse_out = lse_0 + softplus(lse_1 - lse_0)
+    """
 
     @staticmethod
     def forward(ctx, out_0: Tensor, out_1: Tensor, lse_0: Tensor, lse_1: Tensor):
-        merged_out, merged_lse = _merge_attentions_fn(
-            [out_0.contiguous(), out_1.contiguous()],
-            [lse_0.contiguous(), lse_1.contiguous()],
-        )
-        ctx.save_for_backward(out_0, out_1, lse_0, lse_1, merged_out, merged_lse)
-        return merged_out, merged_lse
+        accum_dtype = torch.float32
+        lse_0_f = lse_0.to(accum_dtype).unsqueeze(-1)
+        lse_1_f = lse_1.to(accum_dtype).unsqueeze(-1)
+        out_0_f = out_0.to(accum_dtype)
+        out_1_f = out_1.to(accum_dtype)
+
+        sig = torch.sigmoid(lse_1_f - lse_0_f)  # [..., 1]
+        merged_out = (1 - sig) * out_0_f + sig * out_1_f
+        # lse_out = lse_0 - logsigmoid(lse_0 - lse_1) = lse_0 + softplus(lse_1 - lse_0)
+        merged_lse = lse_0_f + torch.nn.functional.softplus(lse_1_f - lse_0_f)
+
+        ctx.save_for_backward(out_0_f, out_1_f, sig)
+        return merged_out.to(out_0.dtype), merged_lse.squeeze(-1)
 
     @staticmethod
     def backward(ctx, grad_out: Tensor, grad_lse: Tensor):
-        out_0, out_1, lse_0, lse_1, merged_out, merged_lse = ctx.saved_tensors
-        # Replace originating outputs/LSEs with merged values in-place
-        # so upstream attention backward sees the correct context.
-        out_0.data.copy_(merged_out.data.reshape(out_0.shape))
-        out_1.data.copy_(merged_out.data.reshape(out_1.shape))
-        lse_0.data.copy_(merged_lse.data.reshape(lse_0.shape))
-        lse_1.data.copy_(merged_lse.data.reshape(lse_1.shape))
-        return grad_out, grad_out, grad_lse, grad_lse
+        out_0, out_1, sig = ctx.saved_tensors
+        grad_out_f = grad_out.to(torch.float32)
+        grad_lse_f = grad_lse.to(torch.float32).unsqueeze(-1)
+
+        # d output / d out_0 = (1 - sig),  d output / d out_1 = sig
+        d_out_0 = (1 - sig) * grad_out_f
+        d_out_1 = sig * grad_out_f
+
+        # d output / d sig = (out_1 - out_0), then chain through sig = sigmoid(lse_1 - lse_0)
+        # d sig / d lse_0 = -sig*(1-sig),  d sig / d lse_1 = sig*(1-sig)
+        diff = out_1 - out_0  # [..., D]
+        dsig_from_out = (grad_out_f * diff).sum(dim=-1, keepdim=True)
+        sig_deriv = sig * (1 - sig)
+
+        # d lse_out / d lse_0 = (1 - sig),  d lse_out / d lse_1 = sig
+        d_lse_0 = (1 - sig) * grad_lse_f - dsig_from_out * sig_deriv
+        d_lse_1 = sig * grad_lse_f + dsig_from_out * sig_deriv
+
+        return (
+            d_out_0.to(grad_out.dtype),
+            d_out_1.to(grad_out.dtype),
+            d_lse_0.squeeze(-1),
+            d_lse_1.squeeze(-1),
+        )
 
 
 def merge_attentions(

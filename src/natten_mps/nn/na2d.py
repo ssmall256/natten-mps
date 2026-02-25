@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional, Tuple, Union
+
 import torch
 
 from natten_mps import functional as F
@@ -19,17 +21,17 @@ class NeighborhoodAttention2D(torch.nn.Module):
 
     def __init__(
         self,
-        embed_dim,
-        num_heads,
-        kernel_size,
-        stride=1,
-        dilation=1,
-        is_causal=False,
-        num_kv_heads=None,
-        qkv_bias=True,
-        qk_scale=None,
-        attn_drop=0.0,
-        proj_drop=0.0,
+        embed_dim: int,
+        num_heads: int,
+        kernel_size: Union[int, Tuple[int, ...]],
+        stride: Union[int, Tuple[int, ...]] = 1,
+        dilation: Union[int, Tuple[int, ...]] = 1,
+        is_causal: Union[bool, Tuple[bool, ...]] = False,
+        num_kv_heads: Optional[int] = None,
+        qkv_bias: bool = True,
+        qk_scale: Optional[float] = None,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
     ):
         super().__init__()
         if embed_dim % num_heads != 0:

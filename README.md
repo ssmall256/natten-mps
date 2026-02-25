@@ -44,8 +44,40 @@ out3d = na3d(q3d, k3d, v3d, kernel_size=3)
 - **Combined causal + strided** in a single kernel
 - **Non-uniform kernels** — per-axis kernel sizes and dilations for 2D/3D (e.g. `kernel_size=(3, 7)`)
 - **Autograd** — forward and backward through Metal kernels
-- **float32 and float16**
+- **float32, float16, and bfloat16**
+- **GQA / MQA** — grouped-query and multi-query attention via `num_kv_heads` (nn modules) or mismatched Q/KV head counts (functional API)
+- **`return_lse`** — return log-sum-exp alongside output for gradient checkpointing and attention merging
+- **`additional_keys` / `additional_values`** — prepend extra global tokens that every query attends to
+- **`merge_attentions`** — numerically stable sigmoid-based merge of multiple attention outputs (for ring attention, sliding window + global, etc.)
+- **FMHA fast path** — auto-dispatches to `F.scaled_dot_product_attention` when kernel covers the full spatial extent
 - **Compatibility shims** for upstream NATTEN v0.14, v0.17, and v0.20
+
+### New features usage
+
+```python
+import torch
+from natten_mps import na1d, na2d, merge_attentions
+
+# GQA: 8 query heads, 2 KV heads
+q = torch.randn(1, 128, 8, 32, device="mps")
+k = torch.randn(1, 128, 2, 32, device="mps")
+v = torch.randn(1, 128, 2, 32, device="mps")
+out = na1d(q, k, v, kernel_size=7)
+
+# return_lse for merging
+out1, lse1 = na1d(q, k, v, kernel_size=7, return_lse=True)
+out2, lse2 = na1d(q, k, v, kernel_size=7, return_lse=True)
+merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+
+# Additional global tokens
+add_k = torch.randn(1, 4, 2, 32, device="mps")
+add_v = torch.randn(1, 4, 2, 32, device="mps")
+out = na1d(q, k, v, kernel_size=7, additional_keys=add_k, additional_values=add_v)
+
+# GQA via nn module
+from natten_mps import NeighborhoodAttention1D
+layer = NeighborhoodAttention1D(embed_dim=256, num_heads=8, kernel_size=7, num_kv_heads=2)
+```
 
 ## Performance
 
