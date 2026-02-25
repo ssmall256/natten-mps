@@ -7,4 +7,5 @@ __pycache__/
 src/*.egg-info/
 *.egg-info/
 .DS_Store
+build/
 __pycache__/
