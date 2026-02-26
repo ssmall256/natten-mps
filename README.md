@@ -18,7 +18,7 @@ Upstream NATTEN is CUDA-focused and targets NVIDIA GPUs. On Apple Silicon, PyTor
 **natten-mps** provides:
 - **Metal-backed kernels** for PyTorch MPS using `torch.mps.compile_shader`
 - **1D / 2D / 3D** neighborhood attention with **full autograd support**
-- A deployment story that is intentionally simple: **no native extension build step** — install from PyPI and go. Metal shaders are compiled at runtime via `torch.mps.compile_shader` (cached for the session).
+- A deployment story that is intentionally simple: **no native extension build step** — install from PyPI and go. Metal shaders are compiled at runtime via `torch.mps.compile_shader` (cached by PyTorch for the process lifetime).
 
 For MLX-based workflows, see the sibling project: **[natten-mlx](https://github.com/ssmall256/natten-mlx)**.
 
@@ -144,6 +144,12 @@ natten_mps.set_backend("metal")  # "auto" (default), "metal", or "pure"
 print(natten_mps.get_backend())
 ```
 
+Or via environment variable:
+
+```bash
+NATTEN_BACKEND=metal python my_script.py   # "auto" (default), "metal", or "pure"
+```
+
 ---
 
 ## Performance
@@ -235,6 +241,7 @@ from natten_mps.extras.allin1 import (
   - 2D: K ≤ 13
   - 3D: K ≤ 7
 - Unsupported kernel sizes or configurations automatically fall back to `pure`.
+- **Supported dtypes:** Metal kernels run in float32 and float16. Bfloat16 inputs are accepted but upcast to float32 internally. Other dtypes fall back to `pure`.
 - MPS acceleration is **macOS-only** (CPU fallback works anywhere PyTorch runs).
 
 ---
@@ -253,9 +260,36 @@ This project implements Neighborhood Attention as introduced by the upstream [NA
 
 If you use Neighborhood Attention in research, please cite the original papers:
 
-- Hassani et al., **Neighborhood Attention Transformer** (CVPR 2023)  
-- Hassani & Shi, **Dilated Neighborhood Attention Transformer** (2022)  
+- Hassani et al., **Neighborhood Attention Transformer** (CVPR 2023)
+- Hassani & Shi, **Dilated Neighborhood Attention Transformer** (2022)
 - Hassani et al., **Faster Neighborhood Attention** (NeurIPS 2024)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@inproceedings{hassani2023neighborhood,
+  title   = {Neighborhood Attention Transformer},
+  author  = {Hassani, Ali and Walton, Steven and Li, Jiachen and Li, Shen and Shi, Humphrey},
+  booktitle = {CVPR},
+  year    = {2023}
+}
+
+@article{hassani2022dilated,
+  title   = {Dilated Neighborhood Attention Transformer},
+  author  = {Hassani, Ali and Shi, Humphrey},
+  journal = {arXiv preprint arXiv:2209.15001},
+  year    = {2022}
+}
+
+@inproceedings{hassani2024faster,
+  title   = {Faster Neighborhood Attention: Reducing the O(n^2) Cost of Self Attention at the Threadblock Level},
+  author  = {Hassani, Ali and Ke, Wen-Mei and Gong, Jiaming and Walton, Steven and Shi, Humphrey},
+  booktitle = {NeurIPS},
+  year    = {2024}
+}
+```
+</details>
 
 ---
 
