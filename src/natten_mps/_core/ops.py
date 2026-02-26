@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 
-from . import metal, nanobind, pure
+from . import metal, pure
 
 _REQUIRED_BACKEND_FUNCTIONS = (
     "na1d_forward",
@@ -77,7 +77,7 @@ def get_backend():
 
 
 def _resolve_backend():
-    for name in ("nanobind", "metal", "pure"):
+    for name in ("metal", "pure"):
         if name in _BACKEND_REGISTRY and _backend_available(name):
             return name
     raise RuntimeError("No valid backend is registered for natten-mps.")
@@ -154,7 +154,6 @@ def na3d_av_backward(d_out, attn, v, kernel_size, dilation, stride=(1, 1, 1), is
 
 register_backend("pure", pure)
 register_backend("metal", metal)
-register_backend("nanobind", nanobind)
 
 if _ACTIVE_BACKEND not in {"auto", *list(_BACKEND_REGISTRY.keys())}:
     _ACTIVE_BACKEND = "auto"

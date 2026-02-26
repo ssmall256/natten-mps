@@ -169,7 +169,6 @@ CUDA numbers sourced from NATTEN GitHub issues: [#157](https://github.com/SHI-La
 |---|---|---|
 | `pure` | Complete | Pure PyTorch, CPU and MPS |
 | `metal` | Complete | 108 Metal compute shaders via `torch.mps.compile_shader` |
-| `nanobind` | Stub | Reserved for future C++/nanobind acceleration |
 | `auto` | Default | Selects the best available backend |
 
 ```python
@@ -201,7 +200,6 @@ Fused QK+RPB and AV operations for DiNAT-style models with relative position bia
 - Metal kernel acceleration requires odd kernel sizes (1D: K≤63, 2D: K≤13, 3D: K≤7).
 - Unsupported kernel sizes or configurations fall back to pure PyTorch.
 - macOS only (Apple Silicon required for Metal backend; CPU fallback works anywhere PyTorch runs).
-- Nanobind backend is a stub — reserved for future C++/Metal acceleration.
 
 ## Differences from NATTEN
 

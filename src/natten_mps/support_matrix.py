@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from natten_mps._core import metal, nanobind, pure
+from natten_mps._core import metal, pure
 
 
 def get_support_matrix() -> dict[str, dict]:
@@ -33,13 +33,5 @@ def get_support_matrix() -> dict[str, dict]:
                 "(base, causal, strided, causal+strided, non-uniform).",
                 "Supports float32 and float16.",
             ],
-        },
-        "nanobind": {
-            "available": nanobind.is_available(),
-            "forward": {"na1d": False, "na2d": False, "na3d": False, "split_qk_av": False},
-            "backward": {"na1d": False, "na2d": False, "na3d": False, "split_qk_av": False},
-            "varlen": {"na1d": False, "na2d": False, "na3d": False},
-            "fusion": {"na1d": False, "na2d": False, "na3d": False},
-            "constraints": ["Nanobind backend is not yet available."],
         },
     }

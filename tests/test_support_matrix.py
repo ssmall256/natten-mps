@@ -6,7 +6,6 @@ def test_get_support_matrix_returns_dict_with_expected_keys():
     assert isinstance(matrix, dict)
     assert "pure" in matrix
     assert "metal" in matrix
-    assert "nanobind" in matrix
 
 
 def test_pure_backend_reports_available():
@@ -22,10 +21,9 @@ def test_all_backends_have_3d_entries():
         assert "na3d" in info["fusion"], f"{name} missing na3d in fusion"
 
 
-def test_metal_available_nanobind_not():
+def test_metal_reports_available():
     matrix = get_support_matrix()
     assert matrix["metal"]["available"] is True
-    assert matrix["nanobind"]["available"] is False
 
 
 def test_metal_reports_forward_backward_support():

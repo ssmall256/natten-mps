@@ -9,7 +9,9 @@ All notable changes to natten-mps are documented here.
 - Fused SIMD backward kernels for improved backward pass performance.
 - `torch.library` custom op registration for `torch.compile` compatibility.
 - GitHub Actions CI pipeline.
-- Nanobind extension stubs (reserved for future use).
+
+### Removed
+- Nanobind backend stub (benchmarks showed `torch.mps.compile_shader` is faster).
 
 ## [0.2.0] — 2026-02-24
 

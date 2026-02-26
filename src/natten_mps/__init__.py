@@ -4,7 +4,6 @@ import torch
 
 from natten_mps._core import ops
 from natten_mps._core import metal as _metal
-from natten_mps._core import nanobind as _nanobind
 import natten_mps._torch_ops as _torch_ops  # noqa: F401 — register custom ops
 from natten_mps.functional import na1d, na1d_av, na1d_qk, na1d_varlen, na2d, na2d_av, na2d_qk, na2d_varlen, na3d, na3d_av, na3d_qk, na3d_varlen
 from natten_mps.merge import merge_attentions
@@ -19,10 +18,6 @@ def has_mps() -> bool:
 
 def has_metal() -> bool:
     return bool(_metal.is_available())
-
-
-def has_nanobind() -> bool:
-    return bool(_nanobind.is_available())
 
 
 def get_backend() -> str:
@@ -51,7 +46,6 @@ __all__ = [
     "NeighborhoodAttention3D",
     "has_mps",
     "has_metal",
-    "has_nanobind",
     "get_backend",
     "set_backend",
     "get_support_matrix",

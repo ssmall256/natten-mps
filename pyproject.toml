@@ -25,7 +25,6 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark"]
-nanobind = ["nanobind>=2.0", "cmake>=3.27"]
 
 [tool.setuptools.dynamic]
 version = {attr = "natten_mps.version.__version__"}
