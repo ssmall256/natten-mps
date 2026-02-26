@@ -1,14 +1,38 @@
 # natten-mps
 
-GPU-accelerated Neighborhood Attention for Apple Silicon, built on PyTorch MPS.
+GPU-accelerated Neighborhood Attention for Apple Silicon — built on **PyTorch MPS**.
+
+> **Disclaimer (unofficial):** This is an independent, unofficial implementation/port for Apple Silicon.  
+> **Not affiliated with** SHI-Labs or the upstream [NATTEN](https://github.com/SHI-Labs/NATTEN) project.
+
+Neighborhood Attention was introduced by the NATTEN authors. If you use Neighborhood Attention in research, please cite the original papers (see [Acknowledgments](#acknowledgments)).
+
+> **v0.x** — API may change between minor versions. Pin your dependency for production use.
+
+---
 
 ## Why this exists
 
-Upstream NATTEN provides CUDA kernels but dropped macOS support after v0.14. If you train or fine-tune models that use neighborhood attention on a Mac — or want to run inference on Apple Silicon without a CUDA GPU — there was no GPU-accelerated option.
+Upstream NATTEN is CUDA-focused and targets NVIDIA GPUs. On Apple Silicon, PyTorch users often want a **GPU-accelerated** neighborhood attention option without requiring CUDA.
 
-`natten-mps` fills that gap with Metal compute shaders for PyTorch MPS, covering 1D, 2D, and 3D neighborhood attention with full autograd support. For MLX-based workflows, see the sibling project [natten-mlx](https://github.com/ssmall256/natten-mlx).
+**natten-mps** provides:
+- **Metal-backed kernels** for PyTorch MPS using `torch.mps.compile_shader`
+- **1D / 2D / 3D** neighborhood attention with **full autograd support**
+- A deployment story that is intentionally simple: **no native extension build step** — install from PyPI and go. Metal shaders are compiled at runtime via `torch.mps.compile_shader` (cached for the session).
 
-[Installation](#installation) | [Quick start](#quick-start) | [Features](#features) | [Performance](#performance) | [Backend tiers](#backend-tiers) | [Limitations](#limitations) | [Acknowledgments](#acknowledgments) | [License](#license)
+For MLX-based workflows, see the sibling project: **[natten-mlx](https://github.com/ssmall256/natten-mlx)**.
+
+**Jump to:** [Installation](#installation) | [Quick start](#quick-start) | [Features](#features) | [Backends](#backends) | [Performance](#performance) | [Limitations](#limitations) | [Acknowledgments](#acknowledgments)
+
+---
+
+## Use natten-mps if…
+
+- You’re using **PyTorch**
+- You run on **Apple Silicon** and want **MPS (Metal) acceleration**
+- You want a drop-in-ish API (plus optional compatibility shims for historical NATTEN versions)
+
+---
 
 ## Installation
 
@@ -16,118 +40,137 @@ Upstream NATTEN provides CUDA kernels but dropped macOS support after v0.14. If 
 pip install natten-mps
 ```
 
-Requires Python 3.10+ and PyTorch 2.8+ with MPS support (macOS 12.3+).
+Requirements:
+- Python 3.10+
+- PyTorch 2.8+ with MPS support
+- macOS 12.3+ for MPS (CPU fallback works anywhere PyTorch runs)
+
+---
 
 ## Quick start
 
+### Functional API
+
 ```python
 import torch
-from natten_mps import na1d, na2d, na3d, NeighborhoodAttention2D, NeighborhoodAttention3D
+from natten_mps import na1d, na2d, na3d
 
-# 1D neighborhood attention
+# 1D: [B, L, heads, head_dim]
 q = torch.randn(2, 128, 4, 32, device="mps")
 k = torch.randn(2, 128, 4, 32, device="mps")
 v = torch.randn(2, 128, 4, 32, device="mps")
 out = na1d(q, k, v, kernel_size=7)
 
-# 2D module
-layer2d = NeighborhoodAttention2D(embed_dim=128, num_heads=4, kernel_size=(7, 7)).to("mps")
-x = torch.randn(2, 32, 32, 128, device="mps")
-y = layer2d(x)
+# 2D: [B, H, W, heads, head_dim]
+q2d = torch.randn(2, 32, 32, 4, 32, device="mps")
+k2d = torch.randn(2, 32, 32, 4, 32, device="mps")
+v2d = torch.randn(2, 32, 32, 4, 32, device="mps")
+out2d = na2d(q2d, k2d, v2d, kernel_size=7)
 
-# 3D neighborhood attention
+# 3D: [B, D, H, W, heads, head_dim]
 q3d = torch.randn(1, 8, 8, 8, 4, 32, device="mps")
 k3d = torch.randn(1, 8, 8, 8, 4, 32, device="mps")
 v3d = torch.randn(1, 8, 8, 8, 4, 32, device="mps")
 out3d = na3d(q3d, k3d, v3d, kernel_size=3)
 ```
 
+### Module API
+
+```python
+import torch
+from natten_mps import NeighborhoodAttention2D
+
+layer = NeighborhoodAttention2D(embed_dim=128, num_heads=4, kernel_size=(7, 7)).to("mps")
+x = torch.randn(2, 32, 32, 128, device="mps")  # [B, H, W, C]
+y = layer(x)
+```
+
+### Split QK / AV (access attention weights)
+
+```python
+import torch
+from natten_mps import na1d_qk, na1d_av
+
+B, L, H, D = 2, 128, 4, 32
+q = torch.randn(B, L, H, D, device="mps")
+k = torch.randn(B, L, H, D, device="mps")
+v = torch.randn(B, L, H, D, device="mps")
+
+logits = na1d_qk(q, k, kernel_size=7, scale=D ** -0.5)  # [B, L, H, K]
+attn = torch.softmax(logits, dim=-1)
+out = na1d_av(attn, v, kernel_size=7)                   # [B, L, H, D]
+```
+
+---
+
 ## Features
 
-- **1D, 2D, 3D** neighborhood attention (fused and split QK/AV ops)
-- **Variable-length (varlen)** attention — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks
-- **Causal masking** with per-axis control (e.g. `is_causal=(True, False)` for 2D)
+Core:
+- **1D / 2D / 3D** neighborhood attention (fused and split QK/AV ops)
+- **Causal masking**, including per-axis control (e.g. `is_causal=(True, False)` for 2D)
 - **Strided output** for downsampling (e.g. `stride=2`)
-- **Combined causal + strided** in a single kernel
-- **Non-uniform kernels** — per-axis kernel sizes and dilations for 2D/3D (e.g. `kernel_size=(3, 7)`)
-- **Autograd** — forward and backward through Metal kernels
-- **float32, float16, and bfloat16**
-- **GQA / MQA** — grouped-query and multi-query attention via `num_kv_heads` (nn modules) or mismatched Q/KV head counts (functional API)
-- **`return_lse`** — return log-sum-exp alongside output for gradient checkpointing and attention merging
-- **`additional_keys` / `additional_values`** — prepend extra global tokens that every query attends to
-- **`merge_attentions`** — numerically stable sigmoid-based merge of multiple attention outputs (for ring attention, sliding window + global, etc.)
-- **FMHA fast path** — auto-dispatches to `F.scaled_dot_product_attention` when kernel covers the full spatial extent
-- **Compatibility shims** for upstream NATTEN v0.14, v0.17, and v0.20
+- **Combined causal + stride** in one kernel
+- **Non-uniform kernels** for 2D/3D (per-axis kernel sizes and dilations)
 
-### Variable-length attention
+Batching / advanced:
+- **Variable-length (varlen) attention** — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks
+- **GQA / MQA** (`num_kv_heads`) for grouped-query attention patterns
+- **additional_keys / additional_values** — prepend extra global tokens that every query attends to
+- **merge_attentions** — numerically stable sigmoid-based merge of multiple attention outputs
+- **FMHA fast path** — when the kernel covers the full spatial extent, can dispatch to efficient full attention
 
-```python
-import torch
-from natten_mps import na1d_varlen, na2d_varlen
+Extras:
+- **`extras/`** namespace for model-specific fused kernels (e.g., DiNAT-style fused QK+RPB paths)
 
-# 1D: padded batch with per-sample lengths
-q = torch.randn(3, 128, 4, 32, device="mps")  # B=3, L_max=128
-k = torch.randn(3, 128, 4, 32, device="mps")
-v = torch.randn(3, 128, 4, 32, device="mps")
-seq_lens = torch.tensor([128, 96, 64], device="mps")
-out = na1d_varlen(q, k, v, kernel_size=7, seq_lens=seq_lens)
+Compatibility:
+- Optional **compat shims** for historical upstream API versions (see [Compatibility shims](#compatibility-shims))
 
-# 2D: padded batch with per-sample (H, W)
-q2d = torch.randn(2, 32, 32, 4, 32, device="mps")  # B=2, H_max=32, W_max=32
-k2d = torch.randn(2, 32, 32, 4, 32, device="mps")
-v2d = torch.randn(2, 32, 32, 4, 32, device="mps")
-spatial_sizes = torch.tensor([[32, 32], [24, 20]], device="mps")
-out2d = na2d_varlen(q2d, k2d, v2d, kernel_size=7, spatial_sizes=spatial_sizes)
-```
+---
 
-### New features usage
+## Backends
+
+Backend dispatch is controlled at runtime and does not require a native extension.
+
+| Backend | Status | Description |
+|---|---|---|
+| `pure`  | Complete | Pure PyTorch fallback (CPU/MPS) |
+| `metal` | Complete | Metal compute shaders via `torch.mps.compile_shader` |
+| `auto`  | Default  | Select best available backend for the configuration |
 
 ```python
-import torch
-from natten_mps import na1d, na2d, merge_attentions
+import natten_mps
 
-# GQA: 8 query heads, 2 KV heads
-q = torch.randn(1, 128, 8, 32, device="mps")
-k = torch.randn(1, 128, 2, 32, device="mps")
-v = torch.randn(1, 128, 2, 32, device="mps")
-out = na1d(q, k, v, kernel_size=7)
-
-# return_lse for merging
-out1, lse1 = na1d(q, k, v, kernel_size=7, return_lse=True)
-out2, lse2 = na1d(q, k, v, kernel_size=7, return_lse=True)
-merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
-
-# Additional global tokens
-add_k = torch.randn(1, 4, 2, 32, device="mps")
-add_v = torch.randn(1, 4, 2, 32, device="mps")
-out = na1d(q, k, v, kernel_size=7, additional_keys=add_k, additional_values=add_v)
-
-# GQA via nn module
-from natten_mps import NeighborhoodAttention1D
-layer = NeighborhoodAttention1D(embed_dim=256, num_heads=8, kernel_size=7, num_kv_heads=2)
+natten_mps.set_backend("metal")  # "auto" (default), "metal", or "pure"
+print(natten_mps.get_backend())
 ```
+
+---
 
 ## Performance
 
 Metal kernels vs pure-PyTorch backend on Apple Silicon (M-series), forward pass:
 
 | Benchmark | Metal | Pure | Speedup |
-|---|---|---|---|
-| 1D, L=256, K=7 | 0.9 ms | 9.8 ms | **11x** |
-| 1D, L=1024, K=7 | 1.1 ms | 37 ms | **34x** |
-| 2D, 32x32, K=7 | 1.3 ms | 20 ms | **15–17x** |
-| 2D, 64x64, K=7 | 2.9 ms | 84 ms | **29x** |
-| 2D, 32x32, K=7, causal | 1.1 ms | 21 ms | **19x** |
-| 3D, 16x16x16, K=3 | 1.7 ms | 12 ms | **7x** |
+|---|---:|---:|---:|
+| 1D, L=256, K=7 | 0.9 ms | 9.8 ms | **11×** |
+| 1D, L=1024, K=7 | 1.1 ms | 37 ms | **34×** |
+| 2D, 32×32, K=7 | 1.3 ms | 20 ms | **15–17×** |
+| 2D, 64×64, K=7 | 2.9 ms | 84 ms | **29×** |
+| 2D, 32×32, K=7, causal | 1.1 ms | 21 ms | **19×** |
+| 3D, 16³, K=3 | 1.7 ms | 12 ms | **7×** |
 
-Run the full suite: `python benchmarks/bench.py` (add `--backward` for backward pass timing).
+Run the full suite:
+```bash
+python benchmarks/bench.py
+# add --backward to time backward pass
+```
 
 ### Cross-framework: natten-mps vs natten-mlx
 
 Apple Silicon (M-series), fp32, B=1 H=4 D=32, Metal-accelerated:
 
 | Config | natten-mps fwd | natten-mlx fwd | natten-mps bwd | natten-mlx bwd |
-|---|---|---|---|---|
+|---|---:|---:|---:|---:|
 | 1D L=256 K=7 | 0.25 ms | 0.21 ms | 0.39 ms | 0.14 ms |
 | 1D L=1024 K=7 | 0.40 ms | 0.27 ms | 0.63 ms | 0.26 ms |
 | 2D 32×32 K=7 | 0.88 ms | 0.65 ms | 1.62 ms | 1.02 ms |
@@ -135,49 +178,31 @@ Apple Silicon (M-series), fp32, B=1 H=4 D=32, Metal-accelerated:
 | 2D 32×32 K=7 causal | 0.37 ms | 0.29 ms | 0.49 ms | 0.31 ms |
 | 3D 16³ K=3 | 0.55 ms | 0.43 ms | 0.89 ms | 0.50 ms |
 
-MLX's compiled Metal primitives have lower dispatch overhead than PyTorch MPS, giving a consistent 1.2–1.5× forward advantage. Both are orders of magnitude faster than pure-framework baselines.
+MLX’s compiled primitives tend to have lower dispatch overhead than PyTorch MPS, so natten-mlx is often faster for the same shapes. Both are dramatically faster than pure-framework baselines.
 
 ### Variable-length (varlen) attention
 
 Metal-accelerated varlen forward, fp32:
 
 | Config | natten-mps | natten-mlx | MLX speedup |
-|---|---|---|---|
+|---|---:|---:|---:|
 | varlen 1D B=4 L=128 K=7 | 1.74 ms | 0.53 ms | 3.3× |
 | varlen 1D B=4 L=256 K=7 | 1.74 ms | 0.51 ms | 3.4× |
 | varlen 2D B=2 16×16 K=3 | 2.39 ms | 0.82 ms | 2.9× |
 | varlen 2D B=2 32×32 K=7 | 3.79 ms | 1.23 ms | 3.1× |
 | varlen 3D B=2 8³ K=3 | 3.82 ms | 1.55 ms | 2.5× |
 
-Both projects now support GPU-accelerated varlen for all ranks (1D/2D/3D). Backward pass uses per-sample autograd re-differentiation through the standard Metal-accelerated `na*d` kernels.
+Backward pass uses per-sample autograd re-differentiation through the standard Metal-accelerated `na*d` kernels.
 
-### Apple Silicon vs CUDA GPUs — backward pass
+### Methodology
 
-NATTEN's CUDA backward pass has known performance issues for 3D and large 2D workloads. Apple Silicon backward passes are competitive with — and sometimes faster than — datacenter GPUs:
+All timings on **Apple M4 Max**, macOS 26.3, Python 3.11, PyTorch 2.10, float32. Each kernel is warmed up for 5 iterations, then timed for 20 repetitions with `torch.mps.synchronize()` gating; the reported value is the **median**. Reproduce with `python benchmarks/bench.py`.
 
-| Config | natten-mps bwd | natten-mlx bwd | A100 CUDA bwd | A40 CUDA bwd |
-|---|---|---|---|---|
-| 3D 32³ K=3 | 12.4 ms | 5.7 ms | 458 ms (default) / 11.8 ms (KV-parallel) | — |
-| 2D 1024² K=9 | — | — | — | 800–1041 ms |
-| 3D 16³ K=3 | — | — | — | 3856 ms |
-
-CUDA numbers sourced from NATTEN GitHub issues: [#157](https://github.com/SHI-Labs/NATTEN/issues/157) (A100/H100 3D backward) and [#161](https://github.com/SHI-Labs/NATTEN/issues/161) (A40 2D/3D backward). Our CSR inverse-map backward design avoids the scaling problems that affect NATTEN's default CUDA backward kernels.
-
-## Backend tiers
-
-| Backend | Status | Description |
-|---|---|---|
-| `pure` | Complete | Pure PyTorch, CPU and MPS |
-| `metal` | Complete | 108 Metal compute shaders via `torch.mps.compile_shader` |
-| `auto` | Default | Selects the best available backend |
-
-```python
-import natten_mps
-natten_mps.set_backend("metal")  # or "pure", "auto"
-print(natten_mps.get_backend())
-```
+---
 
 ## Compatibility shims
+
+If you have downstream code written against historical upstream APIs, natten-mps includes optional shims:
 
 ```python
 import natten_mps.compat.v014 as natten014
@@ -185,40 +210,56 @@ import natten_mps.compat.v017 as natten017
 import natten_mps.compat.v020 as natten020
 ```
 
-Drop-in replacements for downstream code that depends on upstream `natten` APIs.
+These are best-effort drop-in replacements for common upstream `natten` entry points.
 
-## Extras: fused DiNAT ops
+---
+
+## Extras: model-specific fused kernels
+
+Example: fused DiNAT-style ops with relative position bias:
 
 ```python
-from natten_mps.extras.allin1 import na1d_qk_rpb, na1d_av_fused, na2d_qk_rpb, na2d_av_fused
+from natten_mps.extras.allin1 import (
+    na1d_qk_rpb, na1d_av_fused,
+    na2d_qk_rpb, na2d_av_fused,
+)
 ```
 
-Fused QK+RPB and AV operations for DiNAT-style models with relative position bias.
+---
 
 ## Limitations
 
-- Metal kernel acceleration requires odd kernel sizes (1D: K≤63, 2D: K≤13, 3D: K≤7).
-- Unsupported kernel sizes or configurations fall back to pure PyTorch.
-- macOS only (Apple Silicon required for Metal backend; CPU fallback works anywhere PyTorch runs).
+- **Odd kernel sizes only** for accelerated Neighborhood Attention (this matches upstream NATTEN’s neighborhood half-width formulation).  
+- Metal kernel acceleration has size caps tuned for performance:
+  - 1D: K ≤ 63
+  - 2D: K ≤ 13
+  - 3D: K ≤ 7
+- Unsupported kernel sizes or configurations automatically fall back to `pure`.
+- MPS acceleration is **macOS-only** (CPU fallback works anywhere PyTorch runs).
 
-## Differences from NATTEN
+---
 
-- No CUDA backend — targets MPS/CPU on Apple Silicon
-- Metal compute shaders instead of CUDA kernels
-- Native non-uniform per-axis kernel sizes and dilations
+## Differences from upstream NATTEN (high level)
+
+- Targets **Apple Silicon** (PyTorch **MPS** + CPU fallback); no CUDA backend
+- Uses **Metal compute shaders** instead of CUDA kernels
+- Includes Apple-Silicon-focused extras (and optional compatibility shims)
+
+---
 
 ## Acknowledgments
 
-This project implements the neighborhood attention mechanism introduced by [NATTEN](https://github.com/SHI-Labs/NATTEN) (SHI-Labs), ported to PyTorch MPS with custom Metal kernels. The original NATTEN library and the research behind it are by Ali Hassani, Steven Walton, Humphrey Shi, and collaborators.
+This project implements Neighborhood Attention as introduced by the upstream [NATTEN](https://github.com/SHI-Labs/NATTEN) project (SHI-Labs). The original NATTEN library and research are by Ali Hassani, Steven Walton, Humphrey Shi, and collaborators.
 
-If you use neighborhood attention in research, please cite the original papers:
+If you use Neighborhood Attention in research, please cite the original papers:
 
-- Hassani et al., "Neighborhood Attention Transformer" (CVPR 2023)
-- Hassani & Shi, "Dilated Neighborhood Attention Transformer" (2022)
-- Hassani et al., "Faster Neighborhood Attention" (NeurIPS 2024)
+- Hassani et al., **Neighborhood Attention Transformer** (CVPR 2023)  
+- Hassani & Shi, **Dilated Neighborhood Attention Transformer** (2022)  
+- Hassani et al., **Faster Neighborhood Attention** (NeurIPS 2024)
+
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
-
-NATTEN (the original PyTorch library) is also MIT-licensed.
+MIT — see [LICENSE](LICENSE) for details.  
+Upstream NATTEN is also MIT-licensed.

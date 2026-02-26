@@ -1090,3 +1090,92 @@ class TestFMHAEdgeCases:
         assert q.grad is not None and q.grad.shape == q.shape
         assert ak.grad is not None and ak.grad.shape == ak.shape
         assert av.grad is not None and av.grad.shape == av.shape
+
+
+# ===================================================================
+# 10. 3D Feature Backward Coverage
+# ===================================================================
+
+
+class Test3DFeatureBackward:
+    """3D backward tests for features that had only 1D/2D coverage."""
+
+    def test_na3d_gqa_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _randn(B, Ds, Hs, Ws, heads_q, D).requires_grad_(True)
+        k = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        v = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        out = na3d(q, k, v, kernel_size=3)
+        out.sum().backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert k.grad is not None and k.grad.shape == k.shape
+        assert v.grad is not None and v.grad.shape == v.shape
+
+    def test_na3d_return_lse_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        q = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        k = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        v = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        out, lse = na3d(q, k, v, kernel_size=3, return_lse=True)
+        (out.sum() + lse.sum()).backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert k.grad is not None and k.grad.shape == k.shape
+        assert v.grad is not None and v.grad.shape == v.shape
+
+    def test_na3d_fmha_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        q = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        k = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        v = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        out = na3d(q, k, v, kernel_size=(Ds, Hs, Ws))
+        out.sum().backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert k.grad is not None and k.grad.shape == k.shape
+
+    def test_merge_2way_backward_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        ks = 3
+        q = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        k1 = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        v1 = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        k2 = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        v2 = _randn(B, Ds, Hs, Ws, H, D).requires_grad_(True)
+        out1, lse1 = na3d(q, k1, v1, kernel_size=ks, return_lse=True)
+        out2, lse2 = na3d(q, k2, v2, kernel_size=ks, return_lse=True)
+        merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+        (merged.sum() + merged_lse.sum()).backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert k1.grad is not None and k1.grad.shape == k1.shape
+        assert v2.grad is not None and v2.grad.shape == v2.shape
+
+    def test_gqa_with_return_lse_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _randn(B, Ds, Hs, Ws, heads_q, D).requires_grad_(True)
+        k = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        v = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        out, lse = na3d(q, k, v, kernel_size=3, return_lse=True)
+        (out.sum() + lse.sum()).backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert k.grad is not None and k.grad.shape == k.shape
+
+    def test_additional_kv_with_gqa_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _randn(B, Ds, Hs, Ws, heads_q, D).requires_grad_(True)
+        k = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        v = _randn(B, Ds, Hs, Ws, heads_kv, D).requires_grad_(True)
+        ak = _randn(B, 2, heads_kv, D).requires_grad_(True)
+        av = _randn(B, 2, heads_kv, D).requires_grad_(True)
+        out = na3d(q, k, v, kernel_size=3, additional_keys=ak, additional_values=av)
+        out.sum().backward()
+        assert q.grad is not None and q.grad.shape == q.shape
+        assert ak.grad is not None and ak.grad.shape == ak.shape
+        assert av.grad is not None and av.grad.shape == av.shape
