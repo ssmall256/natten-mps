@@ -1,0 +1,88 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please fill in as much detail as you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A short, self-contained script that demonstrates the issue.
+      render: python
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Apple Silicon chip
+      placeholder: e.g. M1, M2 Pro, M4 Max
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: e.g. 15.3, 26.3
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.11.8
+    validations:
+      required: true
+
+  - type: input
+    id: torch
+    attributes:
+      label: PyTorch version
+      placeholder: e.g. 2.10.0
+    validations:
+      required: true
+
+  - type: input
+    id: natten_mps
+    attributes:
+      label: natten-mps version
+      placeholder: e.g. 0.3.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dtype
+    attributes:
+      label: Dtype
+      options:
+        - float32
+        - float16
+        - bfloat16
+        - other (describe above)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - auto (default)
+        - metal
+        - pure
+    validations:
+      required: true
