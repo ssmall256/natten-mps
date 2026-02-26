@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  backend-tests:
-    name: Backend Tests (${{ matrix.backend }})
+  tests:
+    name: Tests (${{ matrix.backend }})
     runs-on: macos-14
     timeout-minutes: 30
     strategy:
@@ -34,69 +34,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run core tests
-        run: >
-          python -m pytest -q
-          tests/test_na1d.py
-          tests/test_na2d.py
-          tests/test_na3d.py
-          tests/test_functional.py
-          tests/test_functional_3d.py
-          tests/test_functional_3d_expanded.py
-          tests/test_autograd.py
-          tests/test_autograd_3d.py
-          tests/test_split_ops_grad.py
-          tests/test_backends.py
-
-      - name: Run new features tests
-        run: >
-          python -m pytest -q
-          tests/test_new_features.py
-          tests/test_nn_module_grad.py
-
-      - name: Run compat & extras tests
-        run: >
-          python -m pytest -q
-          tests/test_compat_v014.py
-          tests/test_compat_v015.py
-          tests/test_compat_v017.py
-          tests/test_compat_v020.py
-          tests/test_compat_for_version.py
-          tests/test_compat_gradients.py
-          tests/test_extras_allin1.py
-          tests/test_support_matrix.py
-          tests/test_validation_errors.py
-
-  metal-specific:
-    name: Metal Backend
-    runs-on: macos-14
-    timeout-minutes: 20
-    env:
-      NATTEN_BACKEND: metal
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run Metal-specific tests
-        run: >
-          python -m pytest -q
-          tests/test_metal_backend.py
-          tests/test_backward_parity.py
-          tests/test_shift_semantics.py
-          tests/test_extras_backward.py
+      - name: Run tests
+        run: python -m pytest tests/ -q
 
   torch-compile:
-    name: torch.compile Integration
+    name: torch.compile smoke test
     runs-on: macos-14
     timeout-minutes: 15
     steps:
