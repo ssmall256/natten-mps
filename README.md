@@ -5,6 +5,8 @@ GPU-accelerated Neighborhood Attention for Apple Silicon — built on **PyTorch 
 > **Disclaimer (unofficial):** This is an independent, unofficial implementation/port for Apple Silicon.  
 > **Not affiliated with** SHI-Labs or the upstream [NATTEN](https://github.com/SHI-Labs/NATTEN) project.
 
+This is a focused, Apple-Silicon-first implementation intended to be useful, correct, and easy to install — not a replacement for upstream NATTEN on CUDA.
+
 Neighborhood Attention was introduced by the NATTEN authors. If you use Neighborhood Attention in research, please cite the original papers (see [Acknowledgments](#acknowledgments)).
 
 > **v0.x** — API may change between minor versions. Pin your dependency for production use.
@@ -18,7 +20,7 @@ Upstream NATTEN is CUDA-focused and targets NVIDIA GPUs. On Apple Silicon, PyTor
 **natten-mps** provides:
 - **Metal-backed kernels** for PyTorch MPS using `torch.mps.compile_shader`
 - **1D / 2D / 3D** neighborhood attention with **full autograd support**
-- A deployment story that is intentionally simple: **no native extension build step** — install from PyPI and go. Metal shaders are compiled at runtime via `torch.mps.compile_shader` (cached by PyTorch for the process lifetime).
+- A deployment story that is intentionally simple: **no native extension build step** — install from PyPI and go. Metal shaders are compiled at runtime via `torch.mps.compile_shader` and cached by PyTorch for the process (best effort).
 
 For MLX-based workflows, see the sibling project: **[natten-mlx](https://github.com/ssmall256/natten-mlx)**.
 
