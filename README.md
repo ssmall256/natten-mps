@@ -4,13 +4,19 @@ GPU-accelerated Neighborhood Attention for Apple Silicon, built on PyTorch MPS.
 
 ## Why this exists
 
-Upstream NATTEN provides CUDA kernels but dropped macOS support. `natten-mps` delivers Metal compute shader acceleration for 1D, 2D, and 3D neighborhood attention on Apple Silicon, with a pure-PyTorch CPU fallback.
+Upstream NATTEN provides CUDA kernels but dropped macOS support after v0.14. If you train or fine-tune models that use neighborhood attention on a Mac — or want to run inference on Apple Silicon without a CUDA GPU — there was no GPU-accelerated option.
+
+`natten-mps` fills that gap with Metal compute shaders for PyTorch MPS, covering 1D, 2D, and 3D neighborhood attention with full autograd support. For MLX-based workflows, see the sibling project [natten-mlx](https://github.com/ssmall256/natten-mlx).
+
+[Installation](#installation) | [Quick start](#quick-start) | [Features](#features) | [Performance](#performance) | [Backend tiers](#backend-tiers) | [Limitations](#limitations) | [Acknowledgments](#acknowledgments) | [License](#license)
 
 ## Installation
 
 ```bash
 pip install natten-mps
 ```
+
+Requires Python 3.10+ and PyTorch 2.8+ with MPS support (macOS 12.3+).
 
 ## Quick start
 
@@ -190,12 +196,31 @@ from natten_mps.extras.allin1 import na1d_qk_rpb, na1d_av_fused, na2d_qk_rpb, na
 
 Fused QK+RPB and AV operations for DiNAT-style models with relative position bias.
 
-## Differences from upstream NATTEN
+## Limitations
+
+- Metal kernel acceleration requires odd kernel sizes (1D: K≤63, 2D: K≤13, 3D: K≤7).
+- Unsupported kernel sizes or configurations fall back to pure PyTorch.
+- macOS only (Apple Silicon required for Metal backend; CPU fallback works anywhere PyTorch runs).
+- Nanobind backend is a stub — reserved for future C++/Metal acceleration.
+
+## Differences from NATTEN
 
 - No CUDA backend — targets MPS/CPU on Apple Silicon
 - Metal compute shaders instead of CUDA kernels
 - Native non-uniform per-axis kernel sizes and dilations
 
+## Acknowledgments
+
+This project implements the neighborhood attention mechanism introduced by [NATTEN](https://github.com/SHI-Labs/NATTEN) (SHI-Labs), ported to PyTorch MPS with custom Metal kernels. The original NATTEN library and the research behind it are by Ali Hassani, Steven Walton, Humphrey Shi, and collaborators.
+
+If you use neighborhood attention in research, please cite the original papers:
+
+- Hassani et al., "Neighborhood Attention Transformer" (CVPR 2023)
+- Hassani & Shi, "Dilated Neighborhood Attention Transformer" (2022)
+- Hassani et al., "Faster Neighborhood Attention" (NeurIPS 2024)
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
+
+NATTEN (the original PyTorch library) is also MIT-licensed.
