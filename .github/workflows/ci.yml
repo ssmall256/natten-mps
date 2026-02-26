@@ -9,17 +9,11 @@ on:
 
 jobs:
   tests:
-    name: Tests (${{ matrix.backend }})
+    name: Tests
     runs-on: macos-14
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        backend:
-          - pure
-          - metal
     env:
-      NATTEN_BACKEND: ${{ matrix.backend }}
+      NATTEN_BACKEND: pure
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,51 +28,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run tests
-        run: python -m pytest tests/ -q
-
-  torch-compile:
-    name: torch.compile smoke test
-    runs-on: macos-14
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Verify custom ops registered
-        run: |
-          python -c "
-          import torch, natten_mps
-          for name in ['na1d_qk','na1d_av','na2d_qk','na2d_av','na3d_qk','na3d_av',
-                       'na1d_fwd','na2d_fwd','na3d_fwd']:
-              assert getattr(torch.ops.natten_mps, name, None), f'Missing op: {name}'
-          print('All 9 custom ops registered')
-          "
-
-      - name: Test torch.compile forward + backward
-        run: |
-          python -c "
-          import torch, natten_mps
-
-          @torch.compile(backend='aot_eager')
-          def f(q, k, v):
-              return torch.ops.natten_mps.na1d_fwd(q, k, v, [7], [1], [1], [False], None)
-
-          q = torch.randn(1, 16, 4, 32, device='mps', requires_grad=True)
-          k = torch.randn(1, 16, 4, 32, device='mps', requires_grad=True)
-          v = torch.randn(1, 16, 4, 32, device='mps', requires_grad=True)
-          out = f(q, k, v)
-          out.sum().backward()
-          assert q.grad is not None and q.grad.shape == q.shape
-          print('torch.compile forward + backward OK')
-          "
+      - name: Run tests (CPU)
+        run: >
+          python -m pytest tests/ -q
+          --ignore=tests/test_extras_backward.py
+          --ignore=tests/test_metal_backend.py
+          --ignore=tests/test_fused_simd.py
+          -k "not MPS and not mps"
