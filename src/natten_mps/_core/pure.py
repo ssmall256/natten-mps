@@ -566,6 +566,114 @@ def na2d_av_forward(
 
 
 # ---------------------------------------------------------------------------
+# Variable-length 1D neighborhood attention
+# ---------------------------------------------------------------------------
+
+
+def na1d_varlen_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    seq_lens: torch.Tensor,
+    kernel_size: Tuple[int],
+    dilation: Tuple[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    """Variable-length 1D NA: per-sample loop over existing na1d_forward."""
+    _validate_1d_qkv(q, k, v)
+    B, L_max, H, D = q.shape
+    out = torch.zeros_like(q)
+    stride = (1,)
+    is_causal = (False,)
+    for b in range(B):
+        L_b = int(seq_lens[b].item())
+        out[b, :L_b] = na1d_forward(
+            q[b : b + 1, :L_b],
+            k[b : b + 1, :L_b],
+            v[b : b + 1, :L_b],
+            kernel_size,
+            stride,
+            dilation,
+            is_causal,
+            scale,
+        )[0]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Variable-length 2D neighborhood attention
+# ---------------------------------------------------------------------------
+
+
+def na2d_varlen_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Tuple[int, int],
+    dilation: Tuple[int, int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    """Variable-length 2D NA: per-sample loop over existing na2d_forward."""
+    _validate_2d_qkv(q, k, v)
+    B, H_max, W_max, heads, dim = q.shape
+    out = torch.zeros_like(q)
+    stride = (1, 1)
+    is_causal = (False, False)
+    for b in range(B):
+        H_b = int(spatial_sizes[b, 0].item())
+        W_b = int(spatial_sizes[b, 1].item())
+        out[b, :H_b, :W_b] = na2d_forward(
+            q[b : b + 1, :H_b, :W_b],
+            k[b : b + 1, :H_b, :W_b],
+            v[b : b + 1, :H_b, :W_b],
+            kernel_size,
+            stride,
+            dilation,
+            is_causal,
+            scale,
+        )[0]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Variable-length 3D neighborhood attention
+# ---------------------------------------------------------------------------
+
+
+def na3d_varlen_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Tuple[int, int, int],
+    dilation: Tuple[int, int, int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    """Variable-length 3D NA: per-sample loop over existing na3d_forward."""
+    _validate_3d_qkv(q, k, v)
+    B, D_max, H_max, W_max, heads, dim = q.shape
+    out = torch.zeros_like(q)
+    stride = (1, 1, 1)
+    is_causal = (False, False, False)
+    for b in range(B):
+        D_b = int(spatial_sizes[b, 0].item())
+        H_b = int(spatial_sizes[b, 1].item())
+        W_b = int(spatial_sizes[b, 2].item())
+        out[b, :D_b, :H_b, :W_b] = na3d_forward(
+            q[b : b + 1, :D_b, :H_b, :W_b],
+            k[b : b + 1, :D_b, :H_b, :W_b],
+            v[b : b + 1, :D_b, :H_b, :W_b],
+            kernel_size,
+            stride,
+            dilation,
+            is_causal,
+            scale,
+        )[0]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Backward stubs — pure backend always returns None (use re-differentiation)
 # ---------------------------------------------------------------------------
 

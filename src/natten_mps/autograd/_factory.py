@@ -16,7 +16,6 @@ from natten_mps._core import pure as _pure
 def create_na_autograd_fn(rank: int) -> type:
     """Create a fused NA autograd function for the given rank."""
 
-    fwd = getattr(ops, f"na{rank}d_forward")
     qk_fwd = getattr(ops, f"na{rank}d_qk_forward")
     av_bwd = getattr(ops, f"na{rank}d_av_backward")
     qk_bwd = getattr(ops, f"na{rank}d_qk_backward")
@@ -30,14 +29,54 @@ def create_na_autograd_fn(rank: int) -> type:
             ctx.dilation = dilation
             ctx.is_causal = is_causal
             ctx.scale = scale
+
+            # Try to get LSE for optimized fused backward
+            lse = None
+            out = None
+            try:
+                from natten_mps._core import metal as _metal
+                fwd_with_lse = getattr(_metal, f'na{rank}d_forward_with_lse')
+                out, lse = fwd_with_lse(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+            except (ImportError, AttributeError):
+                pass
+
+            if lse is not None:
+                ctx.save_for_backward(q, k, v, lse, out)
+                ctx.has_lse = True
+                return out
+
+            ctx.has_lse = False
+            fwd = getattr(ops, f"na{rank}d_forward")
+            out = fwd(q, k, v, kernel_size, stride, dilation, is_causal, scale)
             ctx.save_for_backward(q, k, v)
-            return fwd(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+            return out
 
         @staticmethod
         def backward(ctx, grad_output):
-            q, k, v = ctx.saved_tensors
-            scale_value = float(q.shape[-1] ** -0.5 if ctx.scale is None else ctx.scale)
+            scale_value = float(
+                ctx.saved_tensors[0].shape[-1] ** -0.5
+                if ctx.scale is None
+                else ctx.scale
+            )
 
+            # Try fused SIMD backward (uses saved LSE + forward output)
+            if ctx.has_lse:
+                q, k, v, lse, fwd_out = ctx.saved_tensors
+                try:
+                    from natten_mps._core import metal as _metal
+                    fused_bwd = getattr(_metal, f'na{rank}d_fused_backward')
+                    dq, dk, dv = fused_bwd(
+                        grad_output, q, k, v, fwd_out, lse,
+                        ctx.kernel_size, ctx.dilation, ctx.stride,
+                        ctx.is_causal, scale_value)
+                    return dq, dk, dv, None, None, None, None, None
+                except Exception:
+                    pass
+                # Fall through to split backward
+            else:
+                q, k, v = ctx.saved_tensors
+
+            # Split backward path (original)
             logits = qk_fwd(q, k, ctx.kernel_size, ctx.dilation, ctx.stride, ctx.is_causal)
             attn_weights = torch.softmax(logits * scale_value, dim=-1)
 

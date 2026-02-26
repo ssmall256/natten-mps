@@ -67,7 +67,15 @@ class NeighborhoodAttention2D(torch.nn.Module):
         self.proj = torch.nn.Linear(self.embed_dim, self.embed_dim)
         self.proj_drop = torch.nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, spatial_sizes=None):
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape ``[B, H, W, C]``.
+            spatial_sizes: Optional ``[B, 2]`` int tensor of actual (H, W) per
+                batch element for variable-length attention.  Positions beyond
+                the per-sample sizes produce zero output.
+        """
         if x.ndim != 4:
             raise ValueError("NeighborhoodAttention2D expects input shape [B, H, W, C].")
 
@@ -87,7 +95,14 @@ class NeighborhoodAttention2D(torch.nn.Module):
             qkv = qkv.permute(3, 0, 1, 2, 4, 5)
             q, k, v = qkv.unbind(0)
 
-        if self.attn_drop_p > 0.0:
+        if spatial_sizes is not None:
+            out = F.na2d_varlen(
+                q, k, v, spatial_sizes,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                scale=self.scale,
+            )
+        elif self.attn_drop_p > 0.0:
             logits = F.na2d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
             default_scale = self.head_dim ** -0.5
             if self.scale != default_scale:

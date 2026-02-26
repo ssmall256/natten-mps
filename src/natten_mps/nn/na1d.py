@@ -69,7 +69,16 @@ class NeighborhoodAttention1D(torch.nn.Module):
         self.proj = torch.nn.Linear(self.embed_dim, self.embed_dim)
         self.proj_drop = torch.nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, seq_lens=None):
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape ``[B, L, C]``.
+            seq_lens: Optional ``[B]`` int tensor of actual sequence lengths
+                per batch element for variable-length attention.  When given,
+                positions beyond ``seq_lens[b]`` are treated as padding and
+                produce zero output.
+        """
         if x.ndim != 3:
             raise ValueError("NeighborhoodAttention1D expects input shape [B, L, C].")
 
@@ -89,7 +98,14 @@ class NeighborhoodAttention1D(torch.nn.Module):
             qkv = qkv.permute(2, 0, 1, 3, 4)
             q, k, v = qkv.unbind(0)
 
-        if self.attn_drop_p > 0.0:
+        if seq_lens is not None:
+            out = F.na1d_varlen(
+                q, k, v, seq_lens,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                scale=self.scale,
+            )
+        elif self.attn_drop_p > 0.0:
             logits = F.na1d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
             default_scale = self.head_dim ** -0.5
             if self.scale != default_scale:

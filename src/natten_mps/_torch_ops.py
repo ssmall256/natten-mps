@@ -574,3 +574,190 @@ def _register_av_autograd(op_name: str, rank: int):
 _register_av_autograd("na1d_av", 1)
 _register_av_autograd("na2d_av", 2)
 _register_av_autograd("na3d_av", 3)
+
+
+# ---------------------------------------------------------------------------
+# Variable-length fused forward ops (na{1,2,3}d_varlen)
+# ---------------------------------------------------------------------------
+
+NATTEN_MPS_LIB.define(
+    "na1d_varlen_fwd(Tensor query, Tensor key, Tensor value, Tensor seq_lens, "
+    "int[] kernel_size, int[] dilation, float? scale) -> Tensor"
+)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na1d_varlen_fwd", "MPS")
+@torch.library.impl(NATTEN_MPS_LIB, "na1d_varlen_fwd", "CPU")
+def _na1d_varlen_fwd_impl(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    seq_lens: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    from natten_mps.functional import na1d_varlen
+    return na1d_varlen(query, key, value, seq_lens,
+                       kernel_size=tuple(kernel_size), dilation=tuple(dilation), scale=scale)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na1d_varlen_fwd", "Meta")
+def _na1d_varlen_fwd_meta(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    seq_lens: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    return query.new_empty(query.shape)
+
+
+NATTEN_MPS_LIB.define(
+    "na2d_varlen_fwd(Tensor query, Tensor key, Tensor value, Tensor spatial_sizes, "
+    "int[] kernel_size, int[] dilation, float? scale) -> Tensor"
+)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na2d_varlen_fwd", "MPS")
+@torch.library.impl(NATTEN_MPS_LIB, "na2d_varlen_fwd", "CPU")
+def _na2d_varlen_fwd_impl(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    from natten_mps.functional import na2d_varlen
+    return na2d_varlen(query, key, value, spatial_sizes,
+                       kernel_size=tuple(kernel_size), dilation=tuple(dilation), scale=scale)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na2d_varlen_fwd", "Meta")
+def _na2d_varlen_fwd_meta(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    return query.new_empty(query.shape)
+
+
+NATTEN_MPS_LIB.define(
+    "na3d_varlen_fwd(Tensor query, Tensor key, Tensor value, Tensor spatial_sizes, "
+    "int[] kernel_size, int[] dilation, float? scale) -> Tensor"
+)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na3d_varlen_fwd", "MPS")
+@torch.library.impl(NATTEN_MPS_LIB, "na3d_varlen_fwd", "CPU")
+def _na3d_varlen_fwd_impl(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    from natten_mps.functional import na3d_varlen
+    return na3d_varlen(query, key, value, spatial_sizes,
+                       kernel_size=tuple(kernel_size), dilation=tuple(dilation), scale=scale)
+
+
+@torch.library.impl(NATTEN_MPS_LIB, "na3d_varlen_fwd", "Meta")
+def _na3d_varlen_fwd_meta(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    spatial_sizes: torch.Tensor,
+    kernel_size: Sequence[int],
+    dilation: Sequence[int],
+    scale: Optional[float],
+) -> torch.Tensor:
+    return query.new_empty(query.shape)
+
+
+# Autograd for varlen ops — uses per-sample backward via the functional API
+def _setup_varlen_ctx(ctx, inputs, output):
+    """Save tensors and params for varlen backward."""
+    q, k, v, sizes, kernel_size, dilation, scale = inputs
+    ctx.kernel_size = list(kernel_size)
+    ctx.dilation = list(dilation)
+    ctx.scale = scale
+    ctx.save_for_backward(q, k, v, sizes)
+
+
+def _varlen_backward(ctx, grad_output, rank: int):
+    """Generic varlen backward — delegates to the functional na{rank}d_varlen backward."""
+    q, k, v, sizes = ctx.saved_tensors
+    ks = tuple(ctx.kernel_size)
+    dil = tuple(ctx.dilation)
+    scale = ctx.scale
+
+    from natten_mps import functional as F
+    varlen_fn = getattr(F, f"na{rank}d_varlen")
+    na_fn = getattr(F, f"na{rank}d")
+
+    B = q.shape[0]
+    dq = torch.zeros_like(q)
+    dk = torch.zeros_like(k)
+    dv = torch.zeros_like(v)
+
+    for b in range(B):
+        if rank == 1:
+            L_b = int(sizes[b].item())
+            slices = (slice(b, b+1), slice(None, L_b))
+            grad_slices = (slice(b, b+1), slice(None, L_b))
+        elif rank == 2:
+            H_b, W_b = int(sizes[b, 0].item()), int(sizes[b, 1].item())
+            slices = (slice(b, b+1), slice(None, H_b), slice(None, W_b))
+            grad_slices = slices
+        else:
+            D_b, H_b, W_b = int(sizes[b, 0].item()), int(sizes[b, 1].item()), int(sizes[b, 2].item())
+            slices = (slice(b, b+1), slice(None, D_b), slice(None, H_b), slice(None, W_b))
+            grad_slices = slices
+
+        q_b = q[slices].detach().requires_grad_(True)
+        k_b = k[slices].detach().requires_grad_(True)
+        v_b = v[slices].detach().requires_grad_(True)
+
+        with torch.enable_grad():
+            out_b = na_fn(q_b, k_b, v_b, kernel_size=ks, dilation=dil, scale=scale)
+            grads = torch.autograd.grad(out_b, (q_b, k_b, v_b), grad_output[grad_slices], allow_unused=True)
+
+        if rank == 1:
+            if grads[0] is not None: dq[b, :L_b] = grads[0][0]
+            if grads[1] is not None: dk[b, :L_b] = grads[1][0]
+            if grads[2] is not None: dv[b, :L_b] = grads[2][0]
+        elif rank == 2:
+            if grads[0] is not None: dq[b, :H_b, :W_b] = grads[0][0]
+            if grads[1] is not None: dk[b, :H_b, :W_b] = grads[1][0]
+            if grads[2] is not None: dv[b, :H_b, :W_b] = grads[2][0]
+        else:
+            if grads[0] is not None: dq[b, :D_b, :H_b, :W_b] = grads[0][0]
+            if grads[1] is not None: dk[b, :D_b, :H_b, :W_b] = grads[1][0]
+            if grads[2] is not None: dv[b, :D_b, :H_b, :W_b] = grads[2][0]
+
+    return dq, dk, dv, None, None, None, None
+
+
+def _register_varlen_autograd(op_name: str, rank: int):
+    def backward(ctx, grad_output):
+        return _varlen_backward(ctx, grad_output, rank)
+
+    torch.library.register_autograd(
+        f"natten_mps::{op_name}", backward, setup_context=_setup_varlen_ctx
+    )
+
+
+_register_varlen_autograd("na1d_varlen_fwd", 1)
+_register_varlen_autograd("na2d_varlen_fwd", 2)
+_register_varlen_autograd("na3d_varlen_fwd", 3)

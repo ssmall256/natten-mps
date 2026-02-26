@@ -39,6 +39,7 @@ out3d = na3d(q3d, k3d, v3d, kernel_size=3)
 ## Features
 
 - **1D, 2D, 3D** neighborhood attention (fused and split QK/AV ops)
+- **Variable-length (varlen)** attention — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks
 - **Causal masking** with per-axis control (e.g. `is_causal=(True, False)` for 2D)
 - **Strided output** for downsampling (e.g. `stride=2`)
 - **Combined causal + strided** in a single kernel
@@ -51,6 +52,27 @@ out3d = na3d(q3d, k3d, v3d, kernel_size=3)
 - **`merge_attentions`** — numerically stable sigmoid-based merge of multiple attention outputs (for ring attention, sliding window + global, etc.)
 - **FMHA fast path** — auto-dispatches to `F.scaled_dot_product_attention` when kernel covers the full spatial extent
 - **Compatibility shims** for upstream NATTEN v0.14, v0.17, and v0.20
+
+### Variable-length attention
+
+```python
+import torch
+from natten_mps import na1d_varlen, na2d_varlen
+
+# 1D: padded batch with per-sample lengths
+q = torch.randn(3, 128, 4, 32, device="mps")  # B=3, L_max=128
+k = torch.randn(3, 128, 4, 32, device="mps")
+v = torch.randn(3, 128, 4, 32, device="mps")
+seq_lens = torch.tensor([128, 96, 64], device="mps")
+out = na1d_varlen(q, k, v, kernel_size=7, seq_lens=seq_lens)
+
+# 2D: padded batch with per-sample (H, W)
+q2d = torch.randn(2, 32, 32, 4, 32, device="mps")  # B=2, H_max=32, W_max=32
+k2d = torch.randn(2, 32, 32, 4, 32, device="mps")
+v2d = torch.randn(2, 32, 32, 4, 32, device="mps")
+spatial_sizes = torch.tensor([[32, 32], [24, 20]], device="mps")
+out2d = na2d_varlen(q2d, k2d, v2d, kernel_size=7, spatial_sizes=spatial_sizes)
+```
 
 ### New features usage
 
@@ -96,19 +118,32 @@ Run the full suite: `python benchmarks/bench.py` (add `--backward` for backward 
 
 ### Cross-framework: natten-mps vs natten-mlx
 
-Apple Silicon (M-series), fp32, B=1 H=4 D=32:
+Apple Silicon (M-series), fp32, B=1 H=4 D=32, Metal-accelerated:
 
-| Config | natten-mps (MPS) | natten-mlx (MLX) |
-|---|---|---|
-| 1D L=256 K=7 fwd | 0.42 ms | 0.24 ms |
-| 1D L=1024 K=7 fwd | 1.12 ms | 0.45 ms |
-| 2D 32×32 K=7 fwd | 0.96 ms | 0.42 ms |
-| 2D 64×64 K=7 fwd | 3.23 ms | 1.52 ms |
-| 3D 16³ K=3 fwd | 0.56 ms | 0.22 ms |
-| 1D L=256 K=7 bwd | 0.56 ms | 0.19 ms |
-| 2D 32×32 K=7 bwd | 1.73 ms | 0.48 ms |
+| Config | natten-mps fwd | natten-mlx fwd | natten-mps bwd | natten-mlx bwd |
+|---|---|---|---|---|
+| 1D L=256 K=7 | 0.25 ms | 0.21 ms | 0.39 ms | 0.14 ms |
+| 1D L=1024 K=7 | 0.40 ms | 0.27 ms | 0.63 ms | 0.26 ms |
+| 2D 32×32 K=7 | 0.88 ms | 0.65 ms | 1.62 ms | 1.02 ms |
+| 2D 64×64 K=7 | 1.32 ms | 1.13 ms | 1.55 ms | 0.97 ms |
+| 2D 32×32 K=7 causal | 0.37 ms | 0.29 ms | 0.49 ms | 0.31 ms |
+| 3D 16³ K=3 | 0.55 ms | 0.43 ms | 0.89 ms | 0.50 ms |
 
-MLX's compiled Metal primitives are generally 2–3× faster than PyTorch MPS dispatch. Both are orders of magnitude faster than pure-framework baselines.
+MLX's compiled Metal primitives have lower dispatch overhead than PyTorch MPS, giving a consistent 1.2–1.5× forward advantage. Both are orders of magnitude faster than pure-framework baselines.
+
+### Variable-length (varlen) attention
+
+Metal-accelerated varlen forward, fp32:
+
+| Config | natten-mps | natten-mlx | MLX speedup |
+|---|---|---|---|
+| varlen 1D B=4 L=128 K=7 | 1.74 ms | 0.53 ms | 3.3× |
+| varlen 1D B=4 L=256 K=7 | 1.74 ms | 0.51 ms | 3.4× |
+| varlen 2D B=2 16×16 K=3 | 2.39 ms | 0.82 ms | 2.9× |
+| varlen 2D B=2 32×32 K=7 | 3.79 ms | 1.23 ms | 3.1× |
+| varlen 3D B=2 8³ K=3 | 3.82 ms | 1.55 ms | 2.5× |
+
+Both projects now support GPU-accelerated varlen for all ranks (1D/2D/3D). Backward pass uses per-sample autograd re-differentiation through the standard Metal-accelerated `na*d` kernels.
 
 ### Apple Silicon vs CUDA GPUs — backward pass
 
@@ -127,7 +162,7 @@ CUDA numbers sourced from NATTEN GitHub issues: [#157](https://github.com/SHI-La
 | Backend | Status | Description |
 |---|---|---|
 | `pure` | Complete | Pure PyTorch, CPU and MPS |
-| `metal` | Complete | 72 Metal compute shaders via `torch.mps.compile_shader` |
+| `metal` | Complete | 108 Metal compute shaders via `torch.mps.compile_shader` |
 | `nanobind` | Stub | Reserved for future C++/nanobind acceleration |
 | `auto` | Default | Selects the best available backend |
 

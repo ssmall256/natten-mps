@@ -1,8 +1,9 @@
 """
-Pure PyTorch implementations of fused QK+RPB and AV operations
-for DiNAT-style neighborhood attention.
+Pure PyTorch implementations + Metal-accelerated forward/backward
+for fused QK+RPB and AV operations (DiNAT-style neighborhood attention).
 
 Exposes intermediate stages (QK, Softmax, AV) separately for API compatibility.
+Uses torch.autograd.Function to route backward through Metal kernels when available.
 """
 
 from __future__ import annotations
@@ -16,10 +17,14 @@ from .reference_impl import get_pb_start, get_window_end, get_window_start
 # Metal dispatch (optional — falls back to pure PyTorch)
 try:
     from natten_mps.extras.allin1.metal import (
-        metal_1d_qkrpb,
         metal_1d_av,
-        metal_2d_qkrpb,
+        metal_1d_av_backward,
+        metal_1d_qkrpb,
+        metal_1d_qkrpb_backward,
         metal_2d_av,
+        metal_2d_av_backward,
+        metal_2d_qkrpb,
+        metal_2d_qkrpb_backward,
     )
     _HAS_METAL = True
 except Exception:
@@ -32,6 +37,11 @@ def _check_args_against_dim(length: int, kernel_size: int, dilation: int, axis_n
             f"Invalid NATTEN args on {axis_name}: kernel_size * dilation must be <= axis length. "
             f"Got kernel_size={kernel_size}, dilation={dilation}, {axis_name}={length}."
         )
+
+
+# ---------------------------------------------------------------------------
+# Pure PyTorch implementations (heads-first layout)
+# ---------------------------------------------------------------------------
 
 
 def _natten1dqkrpb_torch(
@@ -305,6 +315,190 @@ def _natten2dav_torch(
     return output
 
 
+# ---------------------------------------------------------------------------
+# Autograd Functions (Metal forward + backward with pure fallback)
+# ---------------------------------------------------------------------------
+
+
+class _Natten1dQKRPBFunction(torch.autograd.Function):
+    """1D QK+RPB with Metal-accelerated forward and backward."""
+
+    @staticmethod
+    def forward(ctx, query_hf, key_hf, rpb, kernel_size, dilation):
+        ctx.save_for_backward(query_hf, key_hf, rpb)
+        ctx.kernel_size = kernel_size
+        ctx.dilation = dilation
+
+        if _HAS_METAL and rpb is not None:
+            result = metal_1d_qkrpb(query_hf, key_hf, rpb, kernel_size, dilation)
+            if result is not None:
+                return result
+
+        return _natten1dqkrpb_torch(query_hf, key_hf, rpb, kernel_size, dilation)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        query_hf, key_hf, rpb = ctx.saved_tensors
+        K = ctx.kernel_size
+        dil = ctx.dilation
+
+        if _HAS_METAL:
+            result = metal_1d_qkrpb_backward(query_hf, key_hf, rpb, grad_output, K, dil)
+            if result is not None:
+                dq, dk, d_rpb = result
+                return dq, dk, d_rpb, None, None
+
+        # Pure fallback: re-run with autograd
+        q = query_hf.detach().requires_grad_(True)
+        k = key_hf.detach().requires_grad_(True)
+        r = rpb.detach().requires_grad_(True) if rpb is not None else None
+        with torch.enable_grad():
+            out = _natten1dqkrpb_torch(q, k, r, K, dil)
+        grads = torch.autograd.grad(out, [q, k] + ([r] if r is not None else []), grad_output)
+        dq, dk = grads[0], grads[1]
+        d_rpb = grads[2] if r is not None else None
+        return dq, dk, d_rpb, None, None
+
+
+class _Natten1dAVFunction(torch.autograd.Function):
+    """1D AV with Metal-accelerated forward and backward."""
+
+    @staticmethod
+    def forward(ctx, attn_hf, value_hf, kernel_size, dilation):
+        ctx.save_for_backward(attn_hf, value_hf)
+        ctx.kernel_size = kernel_size
+        ctx.dilation = dilation
+
+        if _HAS_METAL:
+            result = metal_1d_av(attn_hf, value_hf, kernel_size, dilation)
+            if result is not None:
+                return result
+
+        return _natten1dav_torch(attn_hf, value_hf, kernel_size, dilation)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        attn_hf, value_hf = ctx.saved_tensors
+        K = ctx.kernel_size
+        dil = ctx.dilation
+
+        if _HAS_METAL:
+            result = metal_1d_av_backward(attn_hf, value_hf, grad_output, K, dil)
+            if result is not None:
+                d_attn, d_val = result
+                return d_attn, d_val, None, None
+
+        # Pure fallback
+        a = attn_hf.detach().requires_grad_(True)
+        v = value_hf.detach().requires_grad_(True)
+        with torch.enable_grad():
+            out = _natten1dav_torch(a, v, K, dil)
+        grads = torch.autograd.grad(out, [a, v], grad_output)
+        return grads[0], grads[1], None, None
+
+
+class _Natten2dQKRPBFunction(torch.autograd.Function):
+    """2D QK+RPB with Metal-accelerated forward and backward."""
+
+    @staticmethod
+    def forward(ctx, query_hf, key_hf, rpb, kernel_size, dilation):
+        ctx.save_for_backward(query_hf, key_hf, rpb)
+        ctx.kernel_size = kernel_size
+        ctx.dilation = dilation
+
+        ks_h = int(kernel_size[0]) if isinstance(kernel_size, tuple) else int(kernel_size)
+        ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else ks_h
+        dil_h = int(dilation[0]) if isinstance(dilation, tuple) else int(dilation)
+        dil_w = int(dilation[1]) if isinstance(dilation, tuple) else dil_h
+
+        if _HAS_METAL and rpb is not None and ks_h == ks_w and dil_h == dil_w:
+            result = metal_2d_qkrpb(query_hf, key_hf, rpb, ks_h, dil_h)
+            if result is not None:
+                return result
+
+        return _natten2dqkrpb_torch(query_hf, key_hf, rpb, kernel_size, dilation)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        query_hf, key_hf, rpb = ctx.saved_tensors
+        ks = ctx.kernel_size
+        dil = ctx.dilation
+
+        ks_h = int(ks[0]) if isinstance(ks, tuple) else int(ks)
+        ks_w = int(ks[1]) if isinstance(ks, tuple) else ks_h
+        dil_h = int(dil[0]) if isinstance(dil, tuple) else int(dil)
+        dil_w = int(dil[1]) if isinstance(dil, tuple) else dil_h
+
+        if _HAS_METAL and ks_h == ks_w and dil_h == dil_w:
+            result = metal_2d_qkrpb_backward(query_hf, key_hf, rpb, grad_output, ks_h, dil_h)
+            if result is not None:
+                dq, dk, d_rpb = result
+                return dq, dk, d_rpb, None, None
+
+        # Pure fallback
+        q = query_hf.detach().requires_grad_(True)
+        k = key_hf.detach().requires_grad_(True)
+        r = rpb.detach().requires_grad_(True) if rpb is not None else None
+        with torch.enable_grad():
+            out = _natten2dqkrpb_torch(q, k, r, ks, dil)
+        grads = torch.autograd.grad(out, [q, k] + ([r] if r is not None else []), grad_output)
+        dq, dk = grads[0], grads[1]
+        d_rpb = grads[2] if r is not None else None
+        return dq, dk, d_rpb, None, None
+
+
+class _Natten2dAVFunction(torch.autograd.Function):
+    """2D AV with Metal-accelerated forward and backward."""
+
+    @staticmethod
+    def forward(ctx, attn_hf, value_hf, kernel_size, dilation):
+        ctx.save_for_backward(attn_hf, value_hf)
+        ctx.kernel_size = kernel_size
+        ctx.dilation = dilation
+
+        ks_h = int(kernel_size[0]) if isinstance(kernel_size, tuple) else int(kernel_size)
+        ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else ks_h
+        dil_h = int(dilation[0]) if isinstance(dilation, tuple) else int(dilation)
+        dil_w = int(dilation[1]) if isinstance(dilation, tuple) else dil_h
+
+        if _HAS_METAL and ks_h == ks_w and dil_h == dil_w:
+            result = metal_2d_av(attn_hf, value_hf, ks_h, dil_h)
+            if result is not None:
+                return result
+
+        return _natten2dav_torch(attn_hf, value_hf, kernel_size, dilation)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        attn_hf, value_hf = ctx.saved_tensors
+        ks = ctx.kernel_size
+        dil = ctx.dilation
+
+        ks_h = int(ks[0]) if isinstance(ks, tuple) else int(ks)
+        ks_w = int(ks[1]) if isinstance(ks, tuple) else ks_h
+        dil_h = int(dil[0]) if isinstance(dil, tuple) else int(dil)
+        dil_w = int(dil[1]) if isinstance(dil, tuple) else dil_h
+
+        if _HAS_METAL and ks_h == ks_w and dil_h == dil_w:
+            result = metal_2d_av_backward(attn_hf, value_hf, grad_output, ks_h, dil_h)
+            if result is not None:
+                d_attn, d_val = result
+                return d_attn, d_val, None, None
+
+        # Pure fallback
+        a = attn_hf.detach().requires_grad_(True)
+        v = value_hf.detach().requires_grad_(True)
+        with torch.enable_grad():
+            out = _natten2dav_torch(a, v, ks, dil)
+        grads = torch.autograd.grad(out, [a, v], grad_output)
+        return grads[0], grads[1], None, None
+
+
+# ---------------------------------------------------------------------------
+# Public API (spatial-first ↔ heads-first permutation)
+# ---------------------------------------------------------------------------
+
+
 def natten1dqkrpb(query, key, rpb, kernel_size, dilation):
     """1D NATTEN QK+RPB (returns scores BEFORE softmax).
 
@@ -317,12 +511,7 @@ def natten1dqkrpb(query, key, rpb, kernel_size, dilation):
     q_hf = query.permute(0, 2, 1, 3).contiguous()
     k_hf = key.permute(0, 2, 1, 3).contiguous()
 
-    if _HAS_METAL and rpb is not None:
-        result = metal_1d_qkrpb(q_hf, k_hf, rpb, int(kernel_size), int(dilation))
-        if result is not None:
-            return result.permute(0, 2, 1, 3)
-
-    out_hf = _natten1dqkrpb_torch(q_hf, k_hf, rpb, kernel_size, dilation)
+    out_hf = _Natten1dQKRPBFunction.apply(q_hf, k_hf, rpb, int(kernel_size), int(dilation))
     return out_hf.permute(0, 2, 1, 3)
 
 
@@ -337,12 +526,7 @@ def natten1dav(attention_probs, value, kernel_size, dilation):
     attn_hf = attention_probs.permute(0, 2, 1, 3).contiguous()
     v_hf = value.permute(0, 2, 1, 3).contiguous()
 
-    if _HAS_METAL:
-        result = metal_1d_av(attn_hf, v_hf, int(kernel_size), int(dilation))
-        if result is not None:
-            return result.permute(0, 2, 1, 3)
-
-    out_hf = _natten1dav_torch(attn_hf, v_hf, kernel_size, dilation)
+    out_hf = _Natten1dAVFunction.apply(attn_hf, v_hf, int(kernel_size), int(dilation))
     return out_hf.permute(0, 2, 1, 3)
 
 
@@ -361,17 +545,7 @@ def natten2dqkrpb(query, key, rpb, kernel_size, dilation):
     q_hf = query.permute(0, 3, 1, 2, 4).contiguous()
     k_hf = key.permute(0, 3, 1, 2, 4).contiguous()
 
-    # Metal only for square kernels with uniform dilation
-    ks_h = k
-    ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else k
-    dil_h = d
-    dil_w = int(dilation[1]) if isinstance(dilation, tuple) else d
-    if _HAS_METAL and rpb is not None and ks_h == ks_w and dil_h == dil_w:
-        result = metal_2d_qkrpb(q_hf, k_hf, rpb, ks_h, dil_h)
-        if result is not None:
-            return result.permute(0, 2, 3, 1, 4)
-
-    out_hf = _natten2dqkrpb_torch(q_hf, k_hf, rpb, kernel_size, dilation)
+    out_hf = _Natten2dQKRPBFunction.apply(q_hf, k_hf, rpb, kernel_size, dilation)
     return out_hf.permute(0, 2, 3, 1, 4)
 
 
@@ -389,16 +563,7 @@ def natten2dav(attention_probs, value, kernel_size, dilation):
     attn_hf = attention_probs.permute(0, 3, 1, 2, 4).contiguous()
     v_hf = value.permute(0, 3, 1, 2, 4).contiguous()
 
-    ks_h = k
-    ks_w = int(kernel_size[1]) if isinstance(kernel_size, tuple) else k
-    dil_h = d
-    dil_w = int(dilation[1]) if isinstance(dilation, tuple) else d
-    if _HAS_METAL and ks_h == ks_w and dil_h == dil_w:
-        result = metal_2d_av(attn_hf, v_hf, ks_h, dil_h)
-        if result is not None:
-            return result.permute(0, 2, 3, 1, 4)
-
-    out_hf = _natten2dav_torch(attn_hf, v_hf, kernel_size, dilation)
+    out_hf = _Natten2dAVFunction.apply(attn_hf, v_hf, kernel_size, dilation)
     return out_hf.permute(0, 2, 3, 1, 4)
 
 

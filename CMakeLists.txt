@@ -50,6 +50,12 @@ nanobind_add_module(_nanobind_ext
     src/natten_mps/_core/_nanobind_ext.cpp
 )
 
+# Force Objective-C++ compilation for Metal API usage
+set_source_files_properties(
+    src/natten_mps/_core/_nanobind_ext.cpp
+    PROPERTIES LANGUAGE OBJCXX
+)
+
 target_link_libraries(_nanobind_ext PRIVATE
     ${TORCH_LIBRARIES}
     "-framework Metal"

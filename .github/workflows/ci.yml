@@ -93,6 +93,7 @@ jobs:
           tests/test_metal_backend.py
           tests/test_backward_parity.py
           tests/test_shift_semantics.py
+          tests/test_extras_backward.py
 
   torch-compile:
     name: torch.compile Integration
