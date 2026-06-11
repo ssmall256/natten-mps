@@ -2857,21 +2857,19 @@ kernel void natten1d_q_backward(
     int ni = is_causal ? get_causal_window_start(i, kernel_size, dilation)
                        : get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int key_i = ki * dilation + ni;
-            bool valid = is_causal ? (key_i >= 0 && key_i < length && key_i <= i)
-                                   : (key_i >= 0 && key_i < length);
-            if (valid) {
-                int da_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int k_idx  = ((b * heads + h) * length + key_i) * dim + d;
-                grad += d_attn[da_idx] * key[k_idx];
-            }
-        }
-        int q_idx = ((b * heads + h) * length + i) * dim + d;
-        d_query[q_idx] = grad;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int key_i = ki * dilation + ni;
+        bool valid = is_causal ? (key_i >= 0 && key_i < length && key_i <= i)
+                               : (key_i >= 0 && key_i < length);
+        if (!valid) continue;
+        float w = d_attn[(bh * l_out + oi) * kernel_size + ki];
+        weighted_add_f32(key + (bh * length + key_i) * dim, w, acc, dim);
     }
+    int q_base = (bh * length + i) * dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -3055,21 +3053,19 @@ kernel void natten1d_q_backward_f16(
     int ni = is_causal ? get_causal_window_start(i, kernel_size, dilation)
                        : get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int key_i = ki * dilation + ni;
-            bool valid = is_causal ? (key_i >= 0 && key_i < length && key_i <= i)
-                                   : (key_i >= 0 && key_i < length);
-            if (valid) {
-                int da_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int k_idx  = ((b * heads + h) * length + key_i) * dim + d;
-                grad += float(d_attn[da_idx]) * float(key[k_idx]);
-            }
-        }
-        int q_idx = ((b * heads + h) * length + i) * dim + d;
-        d_query[q_idx] = half(grad);
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int key_i = ki * dilation + ni;
+        bool valid = is_causal ? (key_i >= 0 && key_i < length && key_i <= i)
+                               : (key_i >= 0 && key_i < length);
+        if (!valid) continue;
+        float w = float(d_attn[(bh * l_out + oi) * kernel_size + ki]);
+        weighted_add_f16(key + (bh * length + key_i) * dim, w, acc, dim);
     }
+    int q_base = (bh * length + i) * dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = half(acc[d]);
 }
 
 kernel void natten1d_k_backward_f16(
@@ -3251,27 +3247,25 @@ kernel void natten2d_q_backward(
                          : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
     int kk = kernel_size_h * kernel_size_w;
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int key_i = ki * dilation_h + ni;
-            bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
-                                       : (key_i >= 0 && key_i < height);
-            if (!valid_i) continue;
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int key_j = kj * dilation_w + nj;
-                bool valid_j = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
-                                           : (key_j >= 0 && key_j < width);
-                if (valid_j) {
-                    int da_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * kk + ki * kernel_size_w + kj;
-                    int k_idx  = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
-                    grad += d_attn[da_idx] * key[k_idx];
-                }
-            }
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int key_i = ki * dilation_h + ni;
+        bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
+                                   : (key_i >= 0 && key_i < height);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int key_j = kj * dilation_w + nj;
+            bool valid_j = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
+                                       : (key_j >= 0 && key_j < width);
+            if (!valid_j) continue;
+            float w = d_attn[((bh * h_out + oi) * w_out + oj) * kk + ki * kernel_size_w + kj];
+            weighted_add_f32(key + ((bh * height + key_i) * width + key_j) * dim, w, acc, dim);
         }
-        int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        d_query[q_idx] = grad;
     }
+    int q_base = ((bh * height + i) * width + j) * dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -3519,27 +3513,25 @@ kernel void natten2d_q_backward_f16(
                          : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
     int kk = kernel_size_h * kernel_size_w;
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int key_i = ki * dilation_h + ni;
-            bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
-                                       : (key_i >= 0 && key_i < height);
-            if (!valid_i) continue;
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int key_j = kj * dilation_w + nj;
-                bool valid_j = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
-                                           : (key_j >= 0 && key_j < width);
-                if (valid_j) {
-                    int da_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * kk + ki * kernel_size_w + kj;
-                    int k_idx  = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
-                    grad += float(d_attn[da_idx]) * float(key[k_idx]);
-                }
-            }
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int key_i = ki * dilation_h + ni;
+        bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
+                                   : (key_i >= 0 && key_i < height);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int key_j = kj * dilation_w + nj;
+            bool valid_j = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
+                                       : (key_j >= 0 && key_j < width);
+            if (!valid_j) continue;
+            float w = float(d_attn[((bh * h_out + oi) * w_out + oj) * kk + ki * kernel_size_w + kj]);
+            weighted_add_f16(key + ((bh * height + key_i) * width + key_j) * dim, w, acc, dim);
         }
-        int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        d_query[q_idx] = half(grad);
     }
+    int q_base = ((bh * height + i) * width + j) * dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = half(acc[d]);
 }
 
 kernel void natten2d_k_backward_f16(
@@ -3791,34 +3783,32 @@ kernel void natten3d_q_backward(
                          : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int key_d = kd * dilation_d + nd;
-            bool vd = is_causal_d ? (key_d >= 0 && key_d < depth && key_d <= dp)
-                                  : (key_d >= 0 && key_d < depth);
-            if (!vd) continue;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int key_i = ki * dilation_h + ni;
-                bool vh = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
-                                      : (key_i >= 0 && key_i < height);
-                if (!vh) continue;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int key_j = kj * dilation_w + nj;
-                    bool vw = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
-                                          : (key_j >= 0 && key_j < width);
-                    if (vw) {
-                        int da_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                     + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int k_idx  = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim+d;
-                        grad += d_attn[da_idx] * key[k_idx];
-                    }
-                }
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int key_d = kd * dilation_d + nd;
+        bool vd = is_causal_d ? (key_d >= 0 && key_d < depth && key_d <= dp)
+                              : (key_d >= 0 && key_d < depth);
+        if (!vd) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int key_i = ki * dilation_h + ni;
+            bool vh = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
+                                  : (key_i >= 0 && key_i < height);
+            if (!vh) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int key_j = kj * dilation_w + nj;
+                bool vw = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
+                                      : (key_j >= 0 && key_j < width);
+                if (!vw) continue;
+                float w = d_attn[((((bh)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
+                                 + (kd*kernel_size_h+ki)*kernel_size_w+kj];
+                weighted_add_f32(key + ((((bh)*depth+key_d)*height+key_i)*width+key_j)*dim, w, acc, dim);
             }
         }
-        int q_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        d_query[q_idx] = grad;
     }
+    int q_base = ((((bh)*depth+dp)*height+i)*width+j)*dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -4147,34 +4137,32 @@ kernel void natten3d_q_backward_f16(
                          : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
 
-    for (int d = 0; d < dim; d++) {
-        float grad = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int key_d = kd * dilation_d + nd;
-            bool vd = is_causal_d ? (key_d >= 0 && key_d < depth && key_d <= dp)
-                                  : (key_d >= 0 && key_d < depth);
-            if (!vd) continue;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int key_i = ki * dilation_h + ni;
-                bool vh = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
-                                      : (key_i >= 0 && key_i < height);
-                if (!vh) continue;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int key_j = kj * dilation_w + nj;
-                    bool vw = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
-                                          : (key_j >= 0 && key_j < width);
-                    if (vw) {
-                        int da_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                     + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int k_idx  = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim+d;
-                        grad += float(d_attn[da_idx]) * float(key[k_idx]);
-                    }
-                }
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+    int bh = b * heads + h;
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int key_d = kd * dilation_d + nd;
+        bool vd = is_causal_d ? (key_d >= 0 && key_d < depth && key_d <= dp)
+                              : (key_d >= 0 && key_d < depth);
+        if (!vd) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int key_i = ki * dilation_h + ni;
+            bool vh = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
+                                  : (key_i >= 0 && key_i < height);
+            if (!vh) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int key_j = kj * dilation_w + nj;
+                bool vw = is_causal_w ? (key_j >= 0 && key_j < width && key_j <= j)
+                                      : (key_j >= 0 && key_j < width);
+                if (!vw) continue;
+                float w = float(d_attn[((((bh)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
+                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj]);
+                weighted_add_f16(key + ((((bh)*depth+key_d)*height+key_i)*width+key_j)*dim, w, acc, dim);
             }
         }
-        int q_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        d_query[q_idx] = half(grad);
     }
+    int q_base = ((((bh)*depth+dp)*height+i)*width+j)*dim;
+    for (int d = 0; d < dim; d++) d_query[q_base + d] = half(acc[d]);
 }
 
 kernel void natten3d_k_backward_f16(

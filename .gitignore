@@ -18,5 +18,8 @@ build/
 benchmarks/*.json
 benchmarks/*.md
 
+# Distribution artifacts
+dist/
+
 # macOS
 .DS_Store

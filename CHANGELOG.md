@@ -8,7 +8,7 @@ All notable changes to natten-mps are documented here.
 - Asymmetric head dimensions — Q/K and V can now have different head dims (e.g. D_qk=64, D_v=256 for cross-attention). The fused SIMD path is used when dims match; otherwise the split Metal path handles the asymmetric case.
 
 ### Changed
-- AV kernel loop order rewritten to K-outer/D-inner with register accumulator and SIMD-vectorized accumulation (`weighted_add_f32`/`weighted_add_f16`), improving split-path AV performance ~2-3×.
+- AV forward and QK backward (d_query) kernels rewritten to K-outer/D-inner loop order with register accumulator and SIMD-vectorized accumulation (`weighted_add_f32`/`weighted_add_f16`), improving split-path performance ~2-3×.
 
 ## [0.3.0] — 2026-02-25
 
