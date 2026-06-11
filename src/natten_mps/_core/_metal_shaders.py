@@ -112,6 +112,11 @@ inline void weighted_add_f16(device const half* src, float weight,
     }
 }
 
+// Max head dimension for AV register accumulator.  Covers D up to 256
+// (NAF cross-attention V dim).  Kernels fall back to the old D-outer loop
+// for D > AV_MAX_D, but this should never happen in practice.
+#define AV_MAX_D 256
+
 // ---------------------------------------------------------------------------
 // 1D QK forward  –  grid: (L, H, B)
 // Input:  query, key  [B, H, L, D]
@@ -175,19 +180,19 @@ kernel void natten1d_av_forward(
     int neighborhood_size = kernel_size / 2;
     int ni = get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length) {
-                int attn_idx = ((b * heads + h) * length + i) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += attn[attn_idx] * value[val_idx];
-            }
+    int bh_base = (b * heads + h) * length;
+    int out_base = (bh_base + i) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i >= 0 && value_i < length) {
+            float w = attn[(bh_base + i) * kernel_size + ki];
+            weighted_add_f32(value + (bh_base + value_i) * dim, w, acc, dim);
         }
-        int out_idx = ((b * heads + h) * length + i) * dim + d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -270,22 +275,25 @@ kernel void natten2d_av_forward(
     int ni = get_window_start(i, height, kernel_size_h, nh_size_h, dilation_h);
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_i = ki * dilation_h + ni;
-                int value_j = kj * dilation_w + nj;
-                if (value_i >= 0 && value_i < height && value_j >= 0 && value_j < width) {
-                    int attn_idx = (((b * heads + h) * height + i) * width + j) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += attn[attn_idx] * value[val_idx];
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_spatial + i * width + j) * dim;
+    int attn_base = (bh_spatial + i * width + j) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        if (value_i < 0 || value_i >= height) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            if (value_j < 0 || value_j >= width) continue;
+            float w = attn[attn_base + ki * kernel_size_w + kj];
+            int val_base = (bh_spatial + value_i * width + value_j) * dim;
+            weighted_add_f32(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -391,29 +399,28 @@ kernel void natten3d_av_forward(
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_spatial = (((b*heads+h)*depth+dp)*height+i)*width+j;
+    int out_base = bhd_spatial * dim;
+    int attn_base = bhd_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    if (val_d >= 0 && val_d < depth &&
-                        val_i >= 0 && val_i < height &&
-                        val_j >= 0 && val_j < width) {
-                        int attn_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += attn[attn_idx] * value[val_idx];
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        if (val_d < 0 || val_d >= depth) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            if (val_i < 0 || val_i >= height) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                if (val_j < 0 || val_j >= width) continue;
+                float w = attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj];
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f32(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ===========================================================================
@@ -479,19 +486,19 @@ kernel void natten1d_av_forward_f16(
     int neighborhood_size = kernel_size / 2;
     int ni = get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length) {
-                int attn_idx = ((b * heads + h) * length + i) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += float(attn[attn_idx]) * float(value[val_idx]);
-            }
+    int bh_base = (b * heads + h) * length;
+    int out_base = (bh_base + i) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i >= 0 && value_i < length) {
+            float w = float(attn[(bh_base + i) * kernel_size + ki]);
+            weighted_add_f16(value + (bh_base + value_i) * dim, w, acc, dim);
         }
-        int out_idx = ((b * heads + h) * length + i) * dim + d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,22 +577,25 @@ kernel void natten2d_av_forward_f16(
     int ni = get_window_start(i, height, kernel_size_h, nh_size_h, dilation_h);
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_i = ki * dilation_h + ni;
-                int value_j = kj * dilation_w + nj;
-                if (value_i >= 0 && value_i < height && value_j >= 0 && value_j < width) {
-                    int attn_idx = (((b * heads + h) * height + i) * width + j) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += float(attn[attn_idx]) * float(value[val_idx]);
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_spatial + i * width + j) * dim;
+    int attn_base = (bh_spatial + i * width + j) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        if (value_i < 0 || value_i >= height) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            if (value_j < 0 || value_j >= width) continue;
+            float w = float(attn[attn_base + ki * kernel_size_w + kj]);
+            int val_base = (bh_spatial + value_i * width + value_j) * dim;
+            weighted_add_f16(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,29 +697,28 @@ kernel void natten3d_av_forward_f16(
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_spatial = (((b*heads+h)*depth+dp)*height+i)*width+j;
+    int out_base = bhd_spatial * dim;
+    int attn_base = bhd_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    if (val_d >= 0 && val_d < depth &&
-                        val_i >= 0 && val_i < height &&
-                        val_j >= 0 && val_j < width) {
-                        int attn_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += float(attn[attn_idx]) * float(value[val_idx]);
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        if (val_d < 0 || val_d >= depth) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            if (val_i < 0 || val_i >= height) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                if (val_j < 0 || val_j >= width) continue;
+                float w = float(attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj]);
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f16(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ===========================================================================
@@ -774,19 +783,18 @@ kernel void natten1d_av_causal_forward(
 
     int ni = get_causal_window_start(i, kernel_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length && value_i <= i) {
-                int attn_idx = ((b * heads + h) * length + i) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += attn[attn_idx] * value[val_idx];
-            }
-        }
-        int out_idx = ((b * heads + h) * length + i) * dim + d;
-        out[out_idx] = sum;
+    int bh_base = (b * heads + h) * length;
+    int out_base = (bh_base + i) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length || value_i > i) continue;
+        float w = attn[(bh_base + i) * kernel_size + ki];
+        weighted_add_f32(value + (bh_base + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -879,26 +887,29 @@ kernel void natten2d_av_causal_forward(
     int nj = causal_w ? get_causal_window_start(j, kernel_size_w, dilation_w)
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int value_i = ki * dilation_h + ni;
-            bool valid_i = (value_i >= 0 && value_i < height);
-            if (causal_h) valid_i = valid_i && (value_i <= i);
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_j = kj * dilation_w + nj;
-                bool valid_j = (value_j >= 0 && value_j < width);
-                if (causal_w) valid_j = valid_j && (value_j <= j);
-                if (valid_i && valid_j) {
-                    int attn_idx = (((b * heads + h) * height + i) * width + j) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += attn[attn_idx] * value[val_idx];
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_spatial + i * width + j) * dim;
+    int attn_base = (bh_spatial + i * width + j) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        bool valid_i = (value_i >= 0 && value_i < height);
+        if (causal_h) valid_i = valid_i && (value_i <= i);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            bool valid_j = (value_j >= 0 && value_j < width);
+            if (causal_w) valid_j = valid_j && (value_j <= j);
+            if (!valid_j) continue;
+            float w = attn[attn_base + ki * kernel_size_w + kj];
+            int val_base = (bh_spatial + value_i * width + value_j) * dim;
+            weighted_add_f32(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,33 +1029,34 @@ kernel void natten3d_av_causal_forward(
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_spatial = (((b*heads+h)*depth+dp)*height+i)*width+j;
+    int out_base = bhd_spatial * dim;
+    int attn_base = bhd_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            bool valid_d = (val_d >= 0 && val_d < depth);
-            if (causal_d) valid_d = valid_d && (val_d <= dp);
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                bool valid_i = (val_i >= 0 && val_i < height);
-                if (causal_h) valid_i = valid_i && (val_i <= i);
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    bool valid_j = (val_j >= 0 && val_j < width);
-                    if (causal_w) valid_j = valid_j && (val_j <= j);
-                    if (valid_d && valid_i && valid_j) {
-                        int attn_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += attn[attn_idx] * value[val_idx];
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        bool valid_d = (val_d >= 0 && val_d < depth);
+        if (causal_d) valid_d = valid_d && (val_d <= dp);
+        if (!valid_d) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            bool valid_i = (val_i >= 0 && val_i < height);
+            if (causal_h) valid_i = valid_i && (val_i <= i);
+            if (!valid_i) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                bool valid_j = (val_j >= 0 && val_j < width);
+                if (causal_w) valid_j = valid_j && (val_j <= j);
+                if (!valid_j) continue;
+                float w = attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj];
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f32(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ===========================================================================
@@ -1109,19 +1121,18 @@ kernel void natten1d_av_causal_forward_f16(
 
     int ni = get_causal_window_start(i, kernel_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length && value_i <= i) {
-                int attn_idx = ((b * heads + h) * length + i) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += float(attn[attn_idx]) * float(value[val_idx]);
-            }
-        }
-        int out_idx = ((b * heads + h) * length + i) * dim + d;
-        out[out_idx] = half(sum);
+    int bh_base = (b * heads + h) * length;
+    int out_base = (bh_base + i) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length || value_i > i) continue;
+        float w = float(attn[(bh_base + i) * kernel_size + ki]);
+        weighted_add_f16(value + (bh_base + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,26 +1224,29 @@ kernel void natten2d_av_causal_forward_f16(
     int nj = causal_w ? get_causal_window_start(j, kernel_size_w, dilation_w)
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int value_i = ki * dilation_h + ni;
-            bool valid_i = (value_i >= 0 && value_i < height);
-            if (causal_h) valid_i = valid_i && (value_i <= i);
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_j = kj * dilation_w + nj;
-                bool valid_j = (value_j >= 0 && value_j < width);
-                if (causal_w) valid_j = valid_j && (value_j <= j);
-                if (valid_i && valid_j) {
-                    int attn_idx = (((b * heads + h) * height + i) * width + j) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += float(attn[attn_idx]) * float(value[val_idx]);
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_spatial + i * width + j) * dim;
+    int attn_base = (bh_spatial + i * width + j) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        bool valid_i = (value_i >= 0 && value_i < height);
+        if (causal_h) valid_i = valid_i && (value_i <= i);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            bool valid_j = (value_j >= 0 && value_j < width);
+            if (causal_w) valid_j = valid_j && (value_j <= j);
+            if (!valid_j) continue;
+            float w = float(attn[attn_base + ki * kernel_size_w + kj]);
+            int val_base = (bh_spatial + value_i * width + value_j) * dim;
+            weighted_add_f16(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,33 +1365,34 @@ kernel void natten3d_av_causal_forward_f16(
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_spatial = (((b*heads+h)*depth+dp)*height+i)*width+j;
+    int out_base = bhd_spatial * dim;
+    int attn_base = bhd_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            bool valid_d = (val_d >= 0 && val_d < depth);
-            if (causal_d) valid_d = valid_d && (val_d <= dp);
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                bool valid_i = (val_i >= 0 && val_i < height);
-                if (causal_h) valid_i = valid_i && (val_i <= i);
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    bool valid_j = (val_j >= 0 && val_j < width);
-                    if (causal_w) valid_j = valid_j && (val_j <= j);
-                    if (valid_d && valid_i && valid_j) {
-                        int attn_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += float(attn[attn_idx]) * float(value[val_idx]);
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        bool valid_d = (val_d >= 0 && val_d < depth);
+        if (causal_d) valid_d = valid_d && (val_d <= dp);
+        if (!valid_d) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            bool valid_i = (val_i >= 0 && val_i < height);
+            if (causal_h) valid_i = valid_i && (val_i <= i);
+            if (!valid_i) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                bool valid_j = (val_j >= 0 && val_j < width);
+                if (causal_w) valid_j = valid_j && (val_j <= j);
+                if (!valid_j) continue;
+                float w = float(attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj]);
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f16(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim+d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ===========================================================================
@@ -1453,19 +1468,19 @@ kernel void natten1d_av_strided_forward(
     int neighborhood_size = kernel_size / 2;
     int ni = get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length) {
-                int attn_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += attn[attn_idx] * value[val_idx];
-            }
-        }
-        int out_idx = ((b * heads + h) * l_out + oi) * dim + d;
-        out[out_idx] = sum;
+    int bh_base_out = (b * heads + h) * l_out;
+    int bh_base_val = (b * heads + h) * length;
+    int out_base = (bh_base_out + oi) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length) continue;
+        float w = attn[(bh_base_out + oi) * kernel_size + ki];
+        weighted_add_f32(value + (bh_base_val + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -1558,22 +1573,26 @@ kernel void natten2d_av_strided_forward(
     int ni = get_window_start(i, height, kernel_size_h, nh_size_h, dilation_h);
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_i = ki * dilation_h + ni;
-                int value_j = kj * dilation_w + nj;
-                if (value_i >= 0 && value_i < height && value_j >= 0 && value_j < width) {
-                    int attn_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += attn[attn_idx] * value[val_idx];
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_out_spatial = (b * heads + h) * h_out * w_out;
+    int bh_val_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_out_spatial + oi * w_out + oj) * dim;
+    int attn_base = (bh_out_spatial + oi * w_out + oj) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        if (value_i < 0 || value_i >= height) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            if (value_j < 0 || value_j >= width) continue;
+            float w = attn[attn_base + ki * kernel_size_w + kj];
+            int val_base = (bh_val_spatial + value_i * width + value_j) * dim;
+            weighted_add_f32(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * dim + d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -1695,29 +1714,28 @@ kernel void natten3d_av_strided_forward(
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_out_spatial = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj);
+    int out_base = bhd_out_spatial * dim;
+    int attn_base = bhd_out_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    if (val_d >= 0 && val_d < depth &&
-                        val_i >= 0 && val_i < height &&
-                        val_j >= 0 && val_j < width) {
-                        int attn_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += attn[attn_idx] * value[val_idx];
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        if (val_d < 0 || val_d >= depth) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            if (val_i < 0 || val_i >= height) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                if (val_j < 0 || val_j >= width) continue;
+                float w = attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj];
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f32(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*dim+d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ===========================================================================
@@ -1791,19 +1809,19 @@ kernel void natten1d_av_strided_forward_f16(
     int neighborhood_size = kernel_size / 2;
     int ni = get_window_start(i, length, kernel_size, neighborhood_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length) {
-                int attn_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += float(attn[attn_idx]) * float(value[val_idx]);
-            }
-        }
-        int out_idx = ((b * heads + h) * l_out + oi) * dim + d;
-        out[out_idx] = half(sum);
+    int bh_base_out = (b * heads + h) * l_out;
+    int bh_base_val = (b * heads + h) * length;
+    int out_base = (bh_base_out + oi) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length) continue;
+        float w = float(attn[(bh_base_out + oi) * kernel_size + ki]);
+        weighted_add_f16(value + (bh_base_val + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1896,22 +1914,26 @@ kernel void natten2d_av_strided_forward_f16(
     int ni = get_window_start(i, height, kernel_size_h, nh_size_h, dilation_h);
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int value_i = ki * dilation_h + ni;
-                int value_j = kj * dilation_w + nj;
-                if (value_i >= 0 && value_i < height && value_j >= 0 && value_j < width) {
-                    int attn_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + value_i) * width + value_j) * dim + d;
-                    sum += float(attn[attn_idx]) * float(value[val_idx]);
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_out_spatial = (b * heads + h) * h_out * w_out;
+    int bh_val_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_out_spatial + oi * w_out + oj) * dim;
+    int attn_base = (bh_out_spatial + oi * w_out + oj) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int value_i = ki * dilation_h + ni;
+        if (value_i < 0 || value_i >= height) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int value_j = kj * dilation_w + nj;
+            if (value_j < 0 || value_j >= width) continue;
+            float w = float(attn[attn_base + ki * kernel_size_w + kj]);
+            int val_base = (bh_val_spatial + value_i * width + value_j) * dim;
+            weighted_add_f16(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * dim + d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2033,29 +2055,28 @@ kernel void natten3d_av_strided_forward_f16(
     int nj = get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
+    int bhd_out_spatial = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj);
+    int out_base = bhd_out_spatial * dim;
+    int attn_base = bhd_out_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    if (val_d >= 0 && val_d < depth &&
-                        val_i >= 0 && val_i < height &&
-                        val_j >= 0 && val_j < width) {
-                        int attn_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += float(attn[attn_idx]) * float(value[val_idx]);
-                    }
-                }
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        if (val_d < 0 || val_d >= depth) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            if (val_i < 0 || val_i >= height) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                if (val_j < 0 || val_j >= width) continue;
+                float w = float(attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj]);
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f16(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*dim+d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ===========================================================================
@@ -2126,19 +2147,19 @@ kernel void natten1d_av_causal_strided_forward(
     int i = oi * stride_val;
     int ni = get_causal_window_start(i, kernel_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length && value_i <= i) {
-                int attn_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += attn[attn_idx] * value[val_idx];
-            }
-        }
-        int out_idx = ((b * heads + h) * l_out + oi) * dim + d;
-        out[out_idx] = sum;
+    int bh_base_out = (b * heads + h) * l_out;
+    int bh_base_val = (b * heads + h) * length;
+    int out_base = (bh_base_out + oi) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length || value_i > i) continue;
+        float w = attn[(bh_base_out + oi) * kernel_size + ki];
+        weighted_add_f32(value + (bh_base_val + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -2244,26 +2265,30 @@ kernel void natten2d_av_causal_strided_forward(
     int nj = causal_w ? get_causal_window_start(j, kernel_size_w, dilation_w)
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int val_i = ki * dilation_h + ni;
-            bool valid_i = (val_i >= 0 && val_i < height);
-            if (causal_h) valid_i = valid_i && (val_i <= i);
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int val_j = kj * dilation_w + nj;
-                bool valid_j = (val_j >= 0 && val_j < width);
-                if (causal_w) valid_j = valid_j && (val_j <= j);
-                if (valid_i && valid_j) {
-                    int attn_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + val_i) * width + val_j) * dim + d;
-                    sum += attn[attn_idx] * value[val_idx];
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_out_spatial = (b * heads + h) * h_out * w_out;
+    int bh_val_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_out_spatial + oi * w_out + oj) * dim;
+    int attn_base = (bh_out_spatial + oi * w_out + oj) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int val_i = ki * dilation_h + ni;
+        bool valid_i = (val_i >= 0 && val_i < height);
+        if (causal_h) valid_i = valid_i && (val_i <= i);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int val_j = kj * dilation_w + nj;
+            bool valid_j = (val_j >= 0 && val_j < width);
+            if (causal_w) valid_j = valid_j && (val_j <= j);
+            if (!valid_j) continue;
+            float w = attn[attn_base + ki * kernel_size_w + kj];
+            int val_base = (bh_val_spatial + val_i * width + val_j) * dim;
+            weighted_add_f32(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * dim + d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -2401,32 +2426,34 @@ kernel void natten3d_av_causal_strided_forward(
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            bool valid_d = (val_d >= 0 && val_d < depth);
-            if (causal_d) valid_d = valid_d && (val_d <= dp);
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                bool valid_i = (val_i >= 0 && val_i < height);
-                if (causal_h) valid_i = valid_i && (val_i <= i);
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    bool valid_j = (val_j >= 0 && val_j < width);
-                    if (causal_w) valid_j = valid_j && (val_j <= j);
-                    if (valid_d && valid_i && valid_j) {
-                        int attn_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += attn[attn_idx] * value[val_idx];
-                    }
-                }
+    int bhd_out_spatial = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj);
+    int out_base = bhd_out_spatial * dim;
+    int attn_base = bhd_out_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        bool valid_d = (val_d >= 0 && val_d < depth);
+        if (causal_d) valid_d = valid_d && (val_d <= dp);
+        if (!valid_d) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            bool valid_i = (val_i >= 0 && val_i < height);
+            if (causal_h) valid_i = valid_i && (val_i <= i);
+            if (!valid_i) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                bool valid_j = (val_j >= 0 && val_j < width);
+                if (causal_w) valid_j = valid_j && (val_j <= j);
+                if (!valid_j) continue;
+                float w = attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj];
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f32(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*dim+d;
-        out[out_idx] = sum;
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = acc[d];
 }
 
 // ---------------------------------------------------------------------------
@@ -2491,19 +2518,19 @@ kernel void natten1d_av_causal_strided_forward_f16(
     int i = oi * stride_val;
     int ni = get_causal_window_start(i, kernel_size, dilation);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size; ki++) {
-            int value_i = ki * dilation + ni;
-            if (value_i >= 0 && value_i < length && value_i <= i) {
-                int attn_idx = ((b * heads + h) * l_out + oi) * kernel_size + ki;
-                int val_idx  = ((b * heads + h) * length + value_i) * dim + d;
-                sum += float(attn[attn_idx]) * float(value[val_idx]);
-            }
-        }
-        int out_idx = ((b * heads + h) * l_out + oi) * dim + d;
-        out[out_idx] = half(sum);
+    int bh_base_out = (b * heads + h) * l_out;
+    int bh_base_val = (b * heads + h) * length;
+    int out_base = (bh_base_out + oi) * dim;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size; ki++) {
+        int value_i = ki * dilation + ni;
+        if (value_i < 0 || value_i >= length || value_i > i) continue;
+        float w = float(attn[(bh_base_out + oi) * kernel_size + ki]);
+        weighted_add_f16(value + (bh_base_val + value_i) * dim, w, acc, dim);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 kernel void natten2d_qk_causal_strided_forward_f16(
@@ -2603,26 +2630,30 @@ kernel void natten2d_av_causal_strided_forward_f16(
     int nj = causal_w ? get_causal_window_start(j, kernel_size_w, dilation_w)
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int ki = 0; ki < kernel_size_h; ki++) {
-            int val_i = ki * dilation_h + ni;
-            bool valid_i = (val_i >= 0 && val_i < height);
-            if (causal_h) valid_i = valid_i && (val_i <= i);
-            for (int kj = 0; kj < kernel_size_w; kj++) {
-                int val_j = kj * dilation_w + nj;
-                bool valid_j = (val_j >= 0 && val_j < width);
-                if (causal_w) valid_j = valid_j && (val_j <= j);
-                if (valid_i && valid_j) {
-                    int attn_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * (kernel_size_h * kernel_size_w) + ki * kernel_size_w + kj;
-                    int val_idx  = (((b * heads + h) * height + val_i) * width + val_j) * dim + d;
-                    sum += float(attn[attn_idx]) * float(value[val_idx]);
-                }
-            }
+    int KK = kernel_size_h * kernel_size_w;
+    int bh_out_spatial = (b * heads + h) * h_out * w_out;
+    int bh_val_spatial = (b * heads + h) * height * width;
+    int out_base = (bh_out_spatial + oi * w_out + oj) * dim;
+    int attn_base = (bh_out_spatial + oi * w_out + oj) * KK;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int ki = 0; ki < kernel_size_h; ki++) {
+        int val_i = ki * dilation_h + ni;
+        bool valid_i = (val_i >= 0 && val_i < height);
+        if (causal_h) valid_i = valid_i && (val_i <= i);
+        if (!valid_i) continue;
+        for (int kj = 0; kj < kernel_size_w; kj++) {
+            int val_j = kj * dilation_w + nj;
+            bool valid_j = (val_j >= 0 && val_j < width);
+            if (causal_w) valid_j = valid_j && (val_j <= j);
+            if (!valid_j) continue;
+            float w = float(attn[attn_base + ki * kernel_size_w + kj]);
+            int val_base = (bh_val_spatial + val_i * width + val_j) * dim;
+            weighted_add_f16(value + val_base, w, acc, dim);
         }
-        int out_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * dim + d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 kernel void natten3d_qk_causal_strided_forward_f16(
@@ -2754,32 +2785,34 @@ kernel void natten3d_av_causal_strided_forward_f16(
                       : get_window_start(j, width, kernel_size_w, nh_size_w, dilation_w);
 
     int k_vol = kernel_size_d * kernel_size_h * kernel_size_w;
-    for (int d = 0; d < dim; d++) {
-        float sum = 0.0f;
-        for (int kd = 0; kd < kernel_size_d; kd++) {
-            int val_d = kd * dilation_d + nd;
-            bool valid_d = (val_d >= 0 && val_d < depth);
-            if (causal_d) valid_d = valid_d && (val_d <= dp);
-            for (int ki = 0; ki < kernel_size_h; ki++) {
-                int val_i = ki * dilation_h + ni;
-                bool valid_i = (val_i >= 0 && val_i < height);
-                if (causal_h) valid_i = valid_i && (val_i <= i);
-                for (int kj = 0; kj < kernel_size_w; kj++) {
-                    int val_j = kj * dilation_w + nj;
-                    bool valid_j = (val_j >= 0 && val_j < width);
-                    if (causal_w) valid_j = valid_j && (val_j <= j);
-                    if (valid_d && valid_i && valid_j) {
-                        int attn_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*k_vol
-                                       + (kd*kernel_size_h+ki)*kernel_size_w+kj;
-                        int val_idx  = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim+d;
-                        sum += float(attn[attn_idx]) * float(value[val_idx]);
-                    }
-                }
+    int bhd_out_spatial = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj);
+    int out_base = bhd_out_spatial * dim;
+    int attn_base = bhd_out_spatial * k_vol;
+    float acc[AV_MAX_D];
+    for (int d = 0; d < dim; d++) acc[d] = 0.0f;
+
+    for (int kd = 0; kd < kernel_size_d; kd++) {
+        int val_d = kd * dilation_d + nd;
+        bool valid_d = (val_d >= 0 && val_d < depth);
+        if (causal_d) valid_d = valid_d && (val_d <= dp);
+        if (!valid_d) continue;
+        for (int ki = 0; ki < kernel_size_h; ki++) {
+            int val_i = ki * dilation_h + ni;
+            bool valid_i = (val_i >= 0 && val_i < height);
+            if (causal_h) valid_i = valid_i && (val_i <= i);
+            if (!valid_i) continue;
+            for (int kj = 0; kj < kernel_size_w; kj++) {
+                int val_j = kj * dilation_w + nj;
+                bool valid_j = (val_j >= 0 && val_j < width);
+                if (causal_w) valid_j = valid_j && (val_j <= j);
+                if (!valid_j) continue;
+                float w = float(attn[attn_base + (kd*kernel_size_h+ki)*kernel_size_w+kj]);
+                int val_base = ((((b*heads+h)*depth+val_d)*height+val_i)*width+val_j)*dim;
+                weighted_add_f16(value + val_base, w, acc, dim);
             }
         }
-        int out_idx = ((((b*heads+h)*d_out+od)*h_out+oi)*w_out+oj)*dim+d;
-        out[out_idx] = half(sum);
     }
+    for (int d = 0; d < dim; d++) out[out_base + d] = half(acc[d]);
 }
 
 // ===========================================================================

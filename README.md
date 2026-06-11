@@ -109,6 +109,7 @@ out = na1d_av(attn, v, kernel_size=7)                   # [B, L, H, D]
 
 Core:
 - **1D / 2D / 3D** neighborhood attention (fused and split QK/AV ops)
+- **Asymmetric head dimensions** — Q/K and V can have different head dims (e.g. Q/K D=64, V D=256 for cross-attention). The split Metal path handles this automatically; the fused SIMD path is used when dims match.
 - **Causal masking**, including per-axis control (e.g. `is_causal=(True, False)` for 2D)
 - **Strided output** for downsampling (e.g. `stride=2`)
 - **Combined causal + stride** in one kernel

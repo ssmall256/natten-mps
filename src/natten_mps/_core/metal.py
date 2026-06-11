@@ -576,9 +576,10 @@ def na1d_forward(
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
 
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, _lse = na1d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype)
 
@@ -606,9 +607,10 @@ def na1d_forward_with_lse(
 
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, lse = na1d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype), lse
 
@@ -827,9 +829,10 @@ def na2d_forward(
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
 
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, _lse = na2d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype)
 
@@ -857,9 +860,10 @@ def na2d_forward_with_lse(
 
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, lse = na2d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype), lse
 
@@ -1031,9 +1035,10 @@ def na3d_forward(
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
 
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, _lse = na3d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype)
 
@@ -1061,9 +1066,10 @@ def na3d_forward_with_lse(
 
     [q, k, v], orig_dtype = _upcast_bf16(q, k, v)
     scale_value = float(q.shape[-1] ** -0.5 if scale is None else scale)
-    D = q.shape[-1]
+    D_q = q.shape[-1]
+    D_v = v.shape[-1]
 
-    if _can_use_fused(D):
+    if _can_use_fused(D_q) and D_q == D_v:
         out, lse = na3d_fused_forward(q, k, v, kernel_size, dilation, stride, is_causal, scale_value)
         return out.to(orig_dtype), lse
 

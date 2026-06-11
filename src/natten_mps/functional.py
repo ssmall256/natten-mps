@@ -53,15 +53,14 @@ def _validate_qkv(
     if query.shape[0] != key.shape[0] or query.shape[0] != value.shape[0]:
         raise ValueError("Batch dimensions must match.")
 
-    # Head dim must match between Q and K; K and V must have same heads
+    # Head dim must match between Q and K; K and V must have same heads.
+    # V may have a different head dim (e.g. NAF cross-attention: Q/K D=64, V D=256).
     heads_q, dim_q = query.shape[-2], query.shape[-1]
     heads_kv, dim_k = key.shape[-2], key.shape[-1]
     if dim_q != dim_k:
-        raise ValueError(f"Head dim must match: Q has {dim_q}, K has {dim_k}.")
+        raise ValueError(f"Head dim must match between Q and K: Q has {dim_q}, K has {dim_k}.")
     if key.shape[-2] != value.shape[-2]:
         raise ValueError(f"K and V must have same number of heads: K={key.shape[-2]}, V={value.shape[-2]}.")
-    if dim_k != value.shape[-1]:
-        raise ValueError(f"Head dim must match: K has {dim_k}, V has {value.shape[-1]}.")
 
     # GQA: heads_q must be divisible by heads_kv
     if heads_q % heads_kv != 0:
