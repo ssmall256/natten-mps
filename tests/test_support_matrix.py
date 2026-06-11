@@ -1,4 +1,11 @@
+import pytest
+
+from natten_mps._core.metal import is_available as metal_is_available
 from natten_mps.support_matrix import get_support_matrix
+
+_skip_no_metal = pytest.mark.skipif(
+    not metal_is_available(), reason="Metal backend not available"
+)
 
 
 def test_get_support_matrix_returns_dict_with_expected_keys():
@@ -21,11 +28,13 @@ def test_all_backends_have_3d_entries():
         assert "na3d" in info["fusion"], f"{name} missing na3d in fusion"
 
 
+@_skip_no_metal
 def test_metal_reports_available():
     matrix = get_support_matrix()
     assert matrix["metal"]["available"] is True
 
 
+@_skip_no_metal
 def test_metal_reports_forward_backward_support():
     matrix = get_support_matrix()
     metal = matrix["metal"]

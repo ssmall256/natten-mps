@@ -3,6 +3,11 @@ import importlib
 import pytest
 
 from natten_mps import get_backend, set_backend
+from natten_mps._core.metal import is_available as metal_is_available
+
+_skip_no_metal = pytest.mark.skipif(
+    not metal_is_available(), reason="Metal backend not available"
+)
 
 
 def test_set_and_get_backend_pure():
@@ -10,11 +15,13 @@ def test_set_and_get_backend_pure():
     assert get_backend() == "pure"
 
 
+@_skip_no_metal
 def test_set_backend_metal():
     set_backend("metal")
     assert get_backend() == "metal"
 
 
+@_skip_no_metal
 def test_auto_backend_selects_metal():
     set_backend("auto")
     assert get_backend() == "metal"
