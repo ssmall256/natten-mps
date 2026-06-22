@@ -3065,7 +3065,6 @@ kernel void natten2d_q_backward(
 
     float acc[AV_MAX_D];
     for (int d = 0; d < dim; d++) acc[d] = 0.0f;
-    int bh = b * heads + h;
     for (int ki = 0; ki < kernel_size_h; ki++) {
         int key_i = ki * dilation_h + ni;
         bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
@@ -3199,7 +3198,6 @@ kernel void natten2d_q_backward_f16(
 
     float acc[AV_MAX_D];
     for (int d = 0; d < dim; d++) acc[d] = 0.0f;
-    int bh = b * heads + h;
     for (int ki = 0; ki < kernel_size_h; ki++) {
         int key_i = ki * dilation_h + ni;
         bool valid_i = is_causal_h ? (key_i >= 0 && key_i < height && key_i <= i)
